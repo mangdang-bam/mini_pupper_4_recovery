@@ -38,8 +38,10 @@ and until the first step the last target is repeated on every STATE frame (``Run
 0.001), no valid IMU, a joint reading within 10 deg of a track end, a policy trained on another servo model or robot model
 (``checks.robot_refusal``), a policy whose bounds were made for another calibration (``checks.band_refusal``), a decoder
 that can reach a target too near a track end (``checks.decoder_selftest``), a gyro bias over ``GYRO_BIAS_MAX``. The servos'
-temperatures are the firmware's to guard: it refuses to arm with a hot servo and goes limp when one stays hot. A
-difference between the robot's offsets and the contract's is printed and logged.
+temperatures are the firmware's to guard: it refuses an ARM while a servo is at 45 degC or above and goes limp when a
+driven servo stays at 55 degC for 1 s; the runner stops at the first STATE after its arming frame that shows either,
+naming the servo and its temperature (``cli.check_flags``). A difference between the robot's offsets and the contract's
+is printed and logged.
 
 **Watches (they print and log; nothing stops).** During a get-up, a servo above 1.2 A for more than 1 s. At the start and
 during a get-up, a position reading within 5 deg of a track end.
@@ -192,6 +194,7 @@ class Runner:
         self.out = out
         self.stand_dd = np.asarray(contract.stand_dd, dtype=int)
         self.armed = False
+        self.first_seq: int | None = None                 # the arming frame's seq (``check_flags``)
         self.clear = False                                # the first arming frame also clears a latched fault
         self.last_dd = None
         self.steps: dict[str, list] = {k: [] for k in (
@@ -280,17 +283,16 @@ class Runner:
         mode = p.SA_GETUP if self.mode == MODE_GETUP else 0
         flags = 0 if self.armed else p.SA_ARM | (p.SA_CLEAR if self.clear else 0)
         seq = self.link.set_all(dd, enable=0x0FFF, flags=flags | mode, cur_cap_ma=CAP_MA)
+        if not self.armed:
+            self.first_seq = seq
         self.armed = True
         self.last_dd = dd
         return seq
 
     def watch(self) -> None:
-        """After each send: link faults, IMU, Enter."""
+        """After each send: the link, the firmware's state since our ARM (a refused ARM, a fault, a disarm), IMU, Enter."""
         try:
-            self.link.check()
-            st = self.link.latest
-            if st.flags & (p.ST_FAULTS | p.ST_WATCHDOG | p.ST_REJECTED):
-                check_flags(self.link)
+            check_flags(self.link, self)
         except Exception as exc:
             raise Disarm(f"link: {exc}") from exc
         st = self.link.latest

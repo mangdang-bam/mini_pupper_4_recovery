@@ -228,17 +228,39 @@ class Mover:
         self.last = t
 
 
-def check_flags(link: Link, mover: Mover | None = None) -> None:
-    """Raise if the reader stopped, a fault or the watchdog latched, or the ESP32 disarmed after our ARM."""
+def after_our_arm(link: Link, first_seq: int | None, st) -> bool:
+    """The STATE answers one of the frames sent since our arming frame (its seq lies from ``first_seq`` to the last
+    sent), so its flags already reflect our ARM (and its CLEAR). Before our first frame (``first_seq`` None), every
+    STATE counts."""
+    if first_seq is None:
+        return True
+    return (st.seq - first_seq) & 0xFFFF <= (link.last_seq - first_seq) & 0xFFFF
+
+
+def servo_temp(st) -> str:
+    """The fault servo and its housing temperature, as STATE reports them."""
+    i = int(st.fault_servo)
+    return f"servo {i} at {st.temp_dc[i - 1] / 10:.1f} degC" if 1 <= i <= 12 else "a servo (not named)"
+
+
+def check_flags(link: Link, mover=None) -> None:
+    """Raise if the reader stopped, or, in a STATE that answers our frames since our ARM (``mover.first_seq``; an earlier
+    one may still show a flag our CLEAR | ARM has cleared): the firmware refused our ARM for a hot servo (``ST_HOT``),
+    disarmed on a temperature, current, board, watchdog or refused ARM, or is not armed (an IDLE or DISARM from another
+    port)."""
     link.check()
     st = link.latest
-    if st is None:
+    first = None if mover is None else mover.first_seq
+    if st is None or not after_our_arm(link, first, st):
         return
+    if st.flags & p.ST_HOT and not st.armed:
+        raise LinkError(f"{servo_temp(st)}: the firmware refused to arm (45 degC or above)")
+    if st.flags & p.ST_FAULT_TEMP:
+        raise LinkError(f"{servo_temp(st)}: the firmware disarmed at 55 degC")
     if st.flags & (p.ST_FAULTS | p.ST_WATCHDOG | p.ST_REJECTED):
         raise LinkError("ESP32 disarmed: %s (servo %d)" % (", ".join(st.flag_names()), st.fault_servo))
-    if mover is not None and mover.first_seq is not None and not st.armed:
-        if (st.seq - mover.first_seq) & 0xFFFF < 0x8000:     # a STATE frame after our ARM
-            raise LinkError("ESP32 disarmed after our ARM (an IDLE or DISARM from another port?)")
+    if first is not None and not st.armed:
+        raise LinkError("ESP32 disarmed after our ARM (an IDLE or DISARM from another port?)")
 
 
 def parent_made(path) -> str:

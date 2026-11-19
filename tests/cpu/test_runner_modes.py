@@ -83,11 +83,28 @@ def test_refuses_without_imu(robot, tmp_path):
         raise AssertionError("no refusal")
 
 
-def test_the_runner_leaves_temperatures_to_the_firmware(robot, tmp_path):
-    """No start refusal and no stop on a hot servo: the firmware holds those rules."""
-    robot.temps_dc = [600] * 12
-    rc, _, meta = go(robot, tmp_path, seconds=0.5)
-    assert rc == 0 and meta["stop_reason"] == "completed"
+def test_a_refused_arm_for_a_hot_servo_stops_the_run(robot, tmp_path):
+    """The firmware refuses the ARM (a servo at 45 degC or above, ``ST_HOT``): the runner stops at the first STATE after
+    its arming frame, naming the servo and its temperature, and nothing moves."""
+    robot.temps_dc[4] = 461
+    rc, _, meta = go(robot, tmp_path, seconds=1.0)
+    assert rc == 0 and meta["stop_reason"].startswith("disarm: link: servo 5 at 46.1 degC: the firmware refused to arm")
+    assert not robot.armed_seen
+
+
+def test_a_temperature_trip_stops_the_run(robot, tmp_path):
+    """The firmware disarms after a driven servo has been at 55 degC for 1 s (``ST_FAULT_TEMP``): the runner stops with
+    the servo and its temperature."""
+    orig = robot.before_tick
+
+    def tick():
+        orig()
+        if len(robot.armed_seen) > POLICY_START + 20:
+            robot.temps_dc[1] = 562
+    robot.before_tick = tick
+    rc, _, meta = go(robot, tmp_path, seconds=4.0)
+    assert rc == 0 and "servo 2 at 56.2 degC: the firmware disarmed at 55 degC" in meta["stop_reason"]
+    assert not robot.armed
 
 
 def test_offsets_within_a_degree_warn_only(robot, tmp_path):

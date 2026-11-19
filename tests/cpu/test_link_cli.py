@@ -89,6 +89,27 @@ def test_latched_fault_refused_until_clear(fake, capsys):
     assert fake.armed_seen
 
 
+def test_a_refused_arm_for_a_hot_servo_stops_with_its_temperature(fake, capsys):
+    """The firmware refuses an ARM from disarmed with a servo at 45 degC (``ST_HOT``, the hottest servo named): a
+    command that arms stops at the first STATE after its arming frame."""
+    fake.temps_dc[6] = 463
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.5"]) == 1
+    assert "servo 7 at 46.3 degC: the firmware refused to arm" in capsys.readouterr().err
+    assert not fake.armed_seen and fake.latched & p.ST_HOT
+    fake.temps_dc[6] = 400                                   # cooled: the next ARM clears the flag
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1"]) == 0
+    assert fake.armed_seen and not fake.latched & p.ST_HOT
+
+
+def test_a_hot_flag_before_our_arm_does_not_count(fake):
+    """A STATE that answers no frame of ours since our ARM may still carry an earlier refusal: it is ignored."""
+    st = types.SimpleNamespace(seq=5, flags=p.ST_HOT, armed=False, fault_servo=3, temp_dc=[500] * 12)
+    link = types.SimpleNamespace(check=lambda: None, latest=st, last_seq=12)
+    cli.check_flags(link, types.SimpleNamespace(first_seq=10))
+    with pytest.raises(cli.LinkError, match="servo 3 at 50.0 degC: the firmware refused to arm"):
+        cli.check_flags(link, types.SimpleNamespace(first_seq=4))
+
+
 def test_implausible_position_blocks_motion(fake, capsys):
     fake.pos[3] = 50.0
     assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1"]) == 1
@@ -254,6 +275,7 @@ def test_stream_refuses_a_hot_start(fake, tmp_path, capsys):
 
 
 def test_stream_a_hot_housing_stops_and_returns(fake, tmp_path):
+    fake.trip_temp_dc = 10**6                                # the host's own watch, before the firmware's trip
     orig = fake.before_tick
 
     def tick():

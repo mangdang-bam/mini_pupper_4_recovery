@@ -50,7 +50,7 @@ What the firmware does on its own:
 
 Each servo's temperature is the median of its last three readings, so one glitched frame never counts; a servo with no valid
 reading for 250 ms isn't counted until it has three again. On a temperature trip there is no ramp to the stand: the robot drops.
-The runner has no temperature rules of its own. Calibration offsets are stored on the ESP32, up to ±120°.
+The runner and `mp4link` stop when the firmware refuses their ARM or disarms on a temperature. Calibration offsets are stored on the ESP32, up to ±120°.
 
 ## Deploying
 
@@ -203,8 +203,8 @@ stateDiagram-v2
   robot's.
 - A policy whose bounds were made for another calibration.
 - A gyro bias over 0.02 rad/s on any axis in the first second: the robot moved. Keep it still and launch again.
-- In the firmware: an ARM while a servo is at 45 °C or above. The servos then stay limp and the robot doesn't rise to the
-  stand: stop the run and let it cool. Check `max temp` with `ping` before each launch.
+- In the firmware: an ARM while a servo is at 45 °C or above. The runner stops at once with `servo N at X degC: the firmware
+  refused to arm`; let that servo cool and launch again.
 
 ## Placing it
 
@@ -236,7 +236,8 @@ $M ping --seconds 1 | grep "max temp"
 ```
 
 The firmware holds the temperature rules: it refuses to arm with a servo at 45 °C or above, and goes limp at once when a driven
-servo stays at 55 °C or above for 1 s. The front-right abduction and hip run warmest: 42-45 °C after a long standing run, so
+servo stays at 55 °C or above for 1 s. The runner, `stream`, `centre` and `calib` stop on either, naming the servo and its
+temperature (`the firmware refused to arm`, `the firmware disarmed at 55 degC`). The front-right abduction and hip run warmest: 42-45 °C after a long standing run, so
 the next arm can be refused. Off load they cool about 3 °C in a few minutes. A raw reading can spike for one frame: check
 again before worrying.
 

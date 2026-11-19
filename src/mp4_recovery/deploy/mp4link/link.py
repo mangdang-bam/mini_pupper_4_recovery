@@ -180,6 +180,11 @@ class Link:
         """Store every set offset; returns how many."""
         return int(round(self.request(p.CMD_SAVE_OFFSETS, 0).val))
 
+    @property
+    def last_seq(self) -> int:
+        """The seq of the latest SET_ALL sent."""
+        return self._seq
+
     def set_all(self, pos_dd, enable: int = 0x0FFF, flags: int = 0, cur_cap_ma: int = 1500,
                 getup: bool = False) -> int:
         """Send twelve targets; returns the frame's seq. ``getup`` adds SA_GETUP (the firmware's get-up mode: current guard off,

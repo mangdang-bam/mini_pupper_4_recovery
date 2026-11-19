@@ -44,6 +44,8 @@ class FakeEsp32:
         self.current_fn = None                          # (i, pos_dd, target_dd) -> mA
         self.walls: dict[int, tuple[float, float]] = {}
         self.temps_dc = [315] * 12
+        self.arm_temp_dc, self.trip_temp_dc, self.trip_temp_s = 450, 550, 1.0   # the firmware's temperature rules
+        self.over_temp_s = [0.0] * 12
         self.acc = [0, 0, 1000]
         self.gyr = [0, 0, 0]
         self.imu_ok = True
@@ -129,11 +131,16 @@ class FakeEsp32:
         if flags & p.SA_DISARM:
             self.armed = False
         elif flags & p.SA_ARM:
+            hottest = max(range(12), key=lambda i: self.temps_dc[i])
             if self.latched & p.ST_FAULTS:
                 self.latched |= p.ST_REJECTED
-            else:
+            elif not self.armed and self.temps_dc[hottest] >= self.arm_temp_dc:
+                self.latched |= p.ST_HOT
+                self.fault_servo = hottest + 1
+            elif not self.armed:
                 self.armed = True
-                self.latched &= ~(p.ST_WATCHDOG | p.ST_REJECTED)
+                self.latched &= ~(p.ST_WATCHDOG | p.ST_REJECTED | p.ST_HOT)
+                self.fault_servo = 0
 
     def currents(self) -> list[int]:
         if self.current_fn is None:
@@ -177,6 +184,16 @@ class FakeEsp32:
             self.latched |= p.ST_FAULT_CUR
             if not self.fault_servo:
                 self.fault_servo = trip
+        hot = 0
+        for i in range(12):
+            driven = self.armed and self.enable >> i & 1
+            self.over_temp_s[i] = self.over_temp_s[i] + dt if driven and self.temps_dc[i] >= self.trip_temp_dc else 0.0
+            if not hot and self.over_temp_s[i] >= self.trip_temp_s:
+                hot = i + 1
+        if hot:
+            self.armed = False
+            self.latched |= p.ST_FAULT_TEMP
+            self.fault_servo = hot
 
     # ---- loop ------------------------------------------------------------
     def _loop(self) -> None:

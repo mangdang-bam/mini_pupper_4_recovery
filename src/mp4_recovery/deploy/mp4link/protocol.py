@@ -53,12 +53,13 @@ ST_REJECTED = 1 << 7
 ST_HOST_USB = 1 << 8
 ST_GETUP = 1 << 9         # get-up mode: current guard off
 ST_RANGE = 1 << 10        # a servo reports range_position_deg other than 310.0 deg: the firmware refuses ARM
+ST_HOT = 1 << 11          # latched: an ARM from disarmed refused, a servo at 45.0 degC or above (fault_servo: the hottest)
 ST_FAULTS = ST_FAULT_CUR | ST_FAULT_TEMP | ST_FAULT_BOARD
 
 FLAG_NAMES = {ST_ARMED: "armed", ST_WATCHDOG: "watchdog", ST_FAULT_CUR: "fault-current",
               ST_FAULT_TEMP: "fault-temperature", ST_FAULT_BOARD: "fault-board",
               ST_IMU_OK: "imu", ST_BOARD_MISSING: "board-missing", ST_REJECTED: "rejected",
-              ST_HOST_USB: "usb", ST_GETUP: "getup", ST_RANGE: "range"}
+              ST_HOST_USB: "usb", ST_GETUP: "getup", ST_RANGE: "range", ST_HOT: "hot"}
 
 # servo parameter ids
 PARAMS = ("reverse_position_sensor", "min_position_adc", "max_position_adc",
