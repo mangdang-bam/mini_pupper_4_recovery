@@ -1,14 +1,18 @@
 """The robot's measured joint limits in the model and the decoder.
 
-Source: ``data/sku2_joint_limits.json``. Per leg, in physical terms (deg from the calibrated stand): the abduction's range
-by hand (``abd_out_range``, + = outward) and under power (``abd_out_range_powered``), the knee relative to the thigh
-(``knee_fold_range``, by hand), the potentiometers' track ends, the signs from the servos' dd direction to the physical
-directions, and the hand ranges as the model's joint ranges (``model_joint_range_rad``: ``*_hip`` = abduction, ``*_calf``
-= knee - thigh).
+Source: ``data/sku2_joint_limits.json``, its sha256 recorded in ``data/sku2_joint_limits.sha256`` (``load`` refuses a
+file that differs: install a new one with ``tools/install_limits.py``, which copies it and records its hash). Per leg, in
+physical terms (deg from the calibrated stand): the abduction's range by hand (``abd_out_range``, + = outward) and under
+power (``abd_out_range_powered``), the knee relative to the thigh (``knee_fold_range``, by hand), the potentiometers'
+track ends, the signs from the servos' dd direction to the physical directions, the hand ranges as the model's joint
+ranges (``model_joint_range_rad``: ``*_hip`` = abduction, ``*_calf`` = knee - thigh), and optionally
+``thigh_stop_deg_backward``: a measured stop on the thigh, deg backward from the stand, at every abduction (absent or
+null: none).
 
 - ``joint_ranges()``: the model's ``*_hip`` and ``*_calf`` ranges at the narrower of hand and powered on each side (the
-  motor sometimes pressed further than the hand). A model joint is its stand (``stand_joint_rad``) + radians(the
-  dd-direction value), the physical value times ``signs_dd_to_phys``.
+  motor sometimes pressed further than the hand), and a ``*_thigh`` range for each leg with a thigh stop
+  (``thigh_stops_deg``). A model joint is its stand (``stand_joint_rad``) + radians(the dd-direction value), the
+  physical value times ``signs_dd_to_phys``.
 - ``apply_limits(spec, margin_deg)``: those ranges on an ``MjSpec`` (the joints limited), each side narrowed by the
   margin.
 - ``decoder_bounds(mode)``: the decoder's clamps (``contract.Bounds``) in the model's coordinates of the calibrated
@@ -31,30 +35,71 @@ from pathlib import Path
 import numpy as np
 
 from mp4_recovery import paths
-from mp4_recovery.contract import (ABDUCTION, ACTION_SIZE, TRACK_DD, Bounds, Contract, contract_tendon_coefs)
+from mp4_recovery.contract import (ABDUCTION, ACTION_SIZE, LEG_SETS, TRACK_DD, Bounds, Contract, contract_tendon_coefs,
+                                   leg_set_name)
 
 LEGS = ("FR", "FL", "RR", "RL")
 LIMITS_JSON = paths.DATA / "sku2_joint_limits.json"
-LIMITS_SHA256 = "485a23664d28e4d6abb583a32c11636b0b8b305f9b886353234115758c7cd105"
+LIMITS_SHA256_FILE = paths.DATA / "sku2_joint_limits.sha256"     # the installed limits file's sha256 (install_limits.py)
 HIP_ENVELOPE_JSON = paths.DATA / "sku2_hip_envelope.json"
 MODES = ("walk", "getup")
 WALK_ABD_MARGIN_DEG = 3.0          # walking: the abduction this far short of its inward stop
 WALK_ABD_OUT_CAP_DEG = 20.0        # walking: at most this far outward from the calibrated stand
 GETUP_MARGIN_DEG = 2.0             # get-up: every measured range less this, each side
 TRACK_MARGIN_DEG = 20.0            # every servo's target this far inside its potentiometer's track ends
+THIGH_STOP_KEY = "thigh_stop_deg_backward"
+
+
+def recorded_sha256() -> str:
+    """The packaged limits file's recorded sha256 (``LIMITS_SHA256_FILE``)."""
+    return LIMITS_SHA256_FILE.read_text().split()[0]
+
+
+LIMITS_SHA256 = recorded_sha256()
 
 
 def load(path=None) -> dict:
-    """The limits file (the packaged copy, its hash checked, unless ``path``)."""
+    """The limits file (the packaged copy, its hash checked against the recorded one, unless ``path``)."""
     p = LIMITS_JSON if path is None else Path(path)
-    if path is None and paths.sha256(p) != LIMITS_SHA256:
-        raise ValueError(f"{p}: sha256 {paths.sha256(p)} is not the recorded {LIMITS_SHA256}")
+    if path is None and paths.sha256(p) != recorded_sha256():
+        raise ValueError(f"{p}: sha256 {paths.sha256(p)} is not the recorded {recorded_sha256()} "
+                         f"({LIMITS_SHA256_FILE.name}; install limits with tools/install_limits.py)")
     return json.loads(p.read_text())
+
+
+def contract_in_force() -> Path:
+    """The contract file ``Contract.load()`` reads by default."""
+    return Path(Contract.load.__func__.__defaults__[0])
+
+
+def limits_contract_check(allow_mismatch: bool = False, j: dict | None = None) -> dict:
+    """The packaged limits' calibration against the contract in force: the limits file's ``contract_sha256_prefix``
+    (the contract it was traced at: the raw file's sha256, 12 hex) and the same prefix of
+    ``contract_in_force()``. Raises ``ValueError`` on a mismatch unless ``allow_mismatch`` (limits traced at another
+    calibration, used knowingly). Returns the record for a run's config."""
+    import hashlib
+    j = load() if j is None else j
+    want = str(j.get("contract_sha256_prefix") or "")
+    path = contract_in_force()
+    have = hashlib.sha256(path.read_bytes()).hexdigest()
+    rec = {"limits_contract_sha256_prefix": want or None, "contract_in_force": str(path),
+           "contract_in_force_sha256_prefix": have[:12], "match": bool(want) and have.startswith(want),
+           "allow_limits_contract_mismatch": bool(allow_mismatch)}
+    if not rec["match"] and not allow_mismatch:
+        raise ValueError(f"the packaged limits were traced at contract {want or '(none recorded)'}, the contract in force "
+                         f"({path}) is {have[:12]}: install limits fitted at this calibration, or pass "
+                         f"--allow-limits-contract-mismatch")
+    return rec
 
 
 def legs(j: dict | None = None) -> dict:
     j = load() if j is None else j
     return {leg["leg"]: leg for leg in j["legs"]}
+
+
+def thigh_stops_deg(j: dict | None = None) -> dict:
+    """Per leg with one: the thigh's measured stop, deg backward from the stand (``thigh_stop_deg_backward``)."""
+    return {leg: float(d[THIGH_STOP_KEY]) for leg, d in legs(j).items() if d.get(THIGH_STOP_KEY) is not None}
 
 
 def physical_ranges(j: dict | None = None) -> dict:
@@ -74,7 +119,7 @@ def _model(stand: float, sign: float, phys: tuple) -> tuple:
 
 
 def joint_ranges(j: dict | None = None, contract: Contract | None = None, hand_only: bool = False) -> dict:
-    """The model's joint ranges (rad, absolute): ``{"FR_hip": (lo, hi), "FR_calf": (lo, hi), ...}``. ``hand_only``:
+    """The model's joint ranges (rad, absolute): ``{"FR_hip": (lo, hi), "FR_calf": (lo, hi), "FR_thigh": (lo, hi), ...}``. ``hand_only``:
     the hand ranges (what the file's ``model_joint_range_rad`` holds)."""
     j = load() if j is None else j
     c = Contract.load() if contract is None else contract
@@ -86,6 +131,12 @@ def joint_ranges(j: dict | None = None, contract: Contract | None = None, hand_o
         abd = tuple(d["abd_out_range"]) if hand_only else phys[leg]["abd_out"]
         out[f"{leg}_hip"] = _model(stand[f"{leg}_hip"], s["abd_out"], abd)
         out[f"{leg}_calf"] = _model(stand[f"{leg}_calf"], s["knee_fold"], phys[leg]["knee_fold"])
+    for leg, stop in thigh_stops_deg(j).items():     # the free side is left to the servo's track ends
+        li = LEGS.index(leg)
+        back = -float(c.signs[3 * li + 1]) * float(legs(j)[leg]["signs_dd_to_phys"]["hip_fwd"]) < 0   # model + = backward
+        st = stand[f"{leg}_thigh"]
+        r = float(np.radians(stop))
+        out[f"{leg}_thigh"] = (st - 2.0 * np.pi, st + r) if back else (st - r, st + 2.0 * np.pi)
     return out
 
 
@@ -179,21 +230,72 @@ def describe(limits: bool, mode: str = "walk", stand_offset_abd_deg: float = 0.0
             "joint_ranges": joint_ranges() if limits else None}
 
 
-def eval_plant(meta: dict, limits: bool | None = None, stand_offset_abd_deg: float | None = None) -> dict:
+def eval_legs(meta: dict, legs: str | None = None, foot: str | None = None,
+              foot_radius_m: float | None = None) -> dict:
+    """An evaluation's legs (``TerrainOptions`` fields ``legs``, ``foot``, ``foot_radius_m``; ``robot.sku2.Legs``): the
+    flags when given, else the policy's meta's ``legs`` block, else the defaults."""
+    m = meta.get("legs") or {}
+    name = leg_set_name(legs or m.get("legs"))
+    same = bool(m) and leg_set_name(m.get("legs")) == name
+    out = {"legs": name, "foot": foot or (m.get("foot") if same else None) or "sphere"}
+    r = foot_radius_m if foot_radius_m is not None else (m.get("foot_radius_m") if same and not foot else None)
+    if r is not None:
+        out["foot_radius_m"] = float(r)
+    return out
+
+
+def legs_flags(args) -> dict:
+    """``--legs``, ``--foot``, ``--foot-radius`` of an evaluation tool (``add_eval_args``), for ``eval_legs``."""
+    return {"legs": getattr(args, "legs", None), "foot": getattr(args, "foot", None),
+            "foot_radius_m": getattr(args, "foot_radius", None)}
+
+
+def eval_plant(meta: dict, limits: bool | None = None, stand_offset_abd_deg: float | None = None,
+               actuator: dict | None = None, legs: str | None = None, foot: str | None = None,
+               foot_radius_m: float | None = None) -> dict:
     """An evaluation's plant options (``TerrainOptions`` fields) for a policy: the flags when given, else the policy's
-    meta (``limits``, ``stand_offset_abd_deg``, the bounds' ``widen_limits_deg``)."""
+    meta (``limits``, ``stand_offset_abd_deg``, the bounds' ``widen_limits_deg``, ``actuator``, the legs:
+    ``eval_legs``). ``actuator``: the servo flags (``servo_model.options_from_args``; its ``actuator`` key absent: the
+    meta's, else md300)."""
+    from mp4_recovery.actuators import choice as servo_model
     lim = bool(meta.get("limits", False)) if limits is None else bool(limits)
     off = float(meta.get("stand_offset_abd_deg", 0.0) or 0.0) if stand_offset_abd_deg is None \
         else float(stand_offset_abd_deg)
     info = (meta.get("bounds") or {}).get("info") or {}
-    return {"limits": lim, "stand_offset_abd_deg": off, "widen_limits_deg": info.get("widen_limits_deg")}
+    servo = {"actuator": servo_model.check_name(meta.get("actuator") or servo_model.NAME), "supply_v_range": None,
+             "supply_drop_ohm_range": None, "r_scale_range": None}
+    servo.update(actuator or {})
+    return {"limits": lim, "stand_offset_abd_deg": off, "widen_limits_deg": info.get("widen_limits_deg"), **servo,
+            **eval_legs(meta, legs, foot, foot_radius_m)}
+
+
+def eval_flags(args) -> dict:
+    """``eval_plant``'s flag arguments from ``add_eval_args``'s namespace (servo model and legs included)."""
+    from mp4_recovery.actuators import choice as servo_model
+    return {"limits": getattr(args, "limits", None), "stand_offset_abd_deg": getattr(args, "stand_offset_abd", None),
+            "actuator": servo_model.options_from_args(args), **legs_flags(args)}
 
 
 def add_eval_args(ap) -> None:
-    """``--limits`` / ``--no-limits`` and ``--stand-offset-abd`` for an evaluation tool (``eval_plant``)."""
+    """``--limits`` / ``--no-limits``, ``--stand-offset-abd``, the servo model's flags (``--actuator``, ``--supply-v``,
+    ``--supply-drop-ohm``, ``--r-scale``) and the legs (``--legs``, ``--foot``, ``--foot-radius``) for an evaluation
+    tool (``eval_plant``, ``eval_flags``)."""
     ap.add_argument("--limits", action="store_true", default=None,
                     help="the measured joint limits in the plant and the decoder (default: the policy's meta)")
     ap.add_argument("--no-limits", dest="limits", action="store_false",
                     help="no joint limits even if the policy's meta has them")
     ap.add_argument("--stand-offset-abd", type=float, metavar="DEG", default=None,
                     help="the abductions' stand shifted outward by DEG (default: the policy's meta, else 0)")
+    from mp4_recovery.actuators import choice as servo_model
+    servo_model.add_args(ap, evaluation=True)
+    add_legs_args(ap)
+
+
+def add_legs_args(ap, default_help: str = "the policy's meta, else sku_2") -> None:
+    """``--legs``, ``--foot``, ``--foot-radius`` (``robot.sku2.Legs``)."""
+    ap.add_argument("--legs", choices=LEG_SETS, default=None,
+                    help=f"the robot's legs: sku_2 (59.75 mm shin) (default: {default_help})")
+    ap.add_argument("--foot", choices=("sphere", "mesh"), default=None,
+                    help="the feet: a sphere (--foot-radius) or the model's mesh (default: sphere)")
+    ap.add_argument("--foot-radius", type=float, metavar="M", default=None,
+                    help="the foot sphere's radius (m; default 0.0055)")

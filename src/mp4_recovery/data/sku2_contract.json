@@ -1,5 +1,5 @@
 {
- "about": "The Mini Pupper v4 SKU2's servo <-> policy contract: signs, stand and calibration.",
+ "about": "The Mini Pupper v4 (SKU2) servo <-> policy contract: signs, stand and calibration.",
  "servo_order": [
   "FR abduction",
   "FR hip",
@@ -103,56 +103,52 @@
   }
  },
  "offsets_deg": [
-  -12.0,
   8.0,
-  -16.0,
+  79.0,
   6.0,
-  -36.0,
-  -42.0,
-  -8.0,
-  25.0,
-  4.0,
-  17.0,
-  7.0,
-  19.0
+  -4.0,
+  -104.0,
+  -62.0,
+  -1.0,
+  36.0,
+  -5.0,
+  -6.0,
+  1.0,
+  25.0
  ],
  "stand_dd": [
-  1671,
   1474,
-  1710,
+  765,
   1495,
-  1910,
-  1970,
-  1631,
-  1304,
-  1513,
-  1383,
-  1483,
-  1365
+  1592,
+  2591,
+  2170,
+  1562,
+  1195,
+  1601,
+  1610,
+  1543,
+  1304
  ],
  "stand_ticks": [
-  472,
   537,
-  459,
+  771,
   530,
-  393,
-  373,
-  485,
-  593,
-  524,
-  567,
-  534,
-  573
+  498,
+  168,
+  307,
+  508,
+  629,
+  495,
+  492,
+  514,
+  593
  ],
  "geometry": {
   "th1n_deg": -55.5198,
   "th2n_deg": 41.7555,
   "target_hip_height_mm": 70.0,
-  "source": "the firmware IK's neutral pose (foot under the hip axis, 70 mm below, as measured on SKU2), solved in the model's own link geometry"
+  "source": "the firmware IK's neutral pose (each foot under its hip axis, 70 mm below), solved in the model's link geometry"
  },
- "sources": {
-  "src/mp4_recovery/robot/assets/sku_2/pupper.xml": "7bd8ecc99c261936d04a03d41d17868ad573250d34739d85c809836e467db9b4",
-  "src/mp4_recovery/robot/assets/sku_2/servo_map.json": "b426beaeb412a07f372d206b457d85a4d1dfdf0b1cd89f60a554fb1be26ee8d8"
- },
- "calibration": "mp4link offsets --json after a calibration"
+ "calibration": "the unit the joint limits in sku2_joint_limits.json were measured on (tools/make_contract.py makes another unit's)"
 }

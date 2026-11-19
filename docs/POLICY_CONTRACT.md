@@ -25,8 +25,6 @@ The per-robot numbers (servo signs, stand pose, calibration offsets) live in `sr
 
 | Decoder bounds mode | `walk` | `getup`, with a hip envelope |
 
-`policies/getup_sim` has the same layout as `policies/getup`.
-
 Both run at 50 Hz (`CONTROL_DT = 0.02`). The robot reports state every 5 ms, and one policy step is 4 STATE frames, locked to the
 ESP32's clock.
 
@@ -225,7 +223,7 @@ Needs no robot and no port. It checks:
 - **Fixtures:** `fixture_obs` through the numpy forward pass against `fixture_act`, within 1e-5 × the largest output (at least 1e-5), under this machine's numpy. Run it on
   the Pi too: `tools/deploy.sh` does.
 - **Contract:** `contract_sha256` is the contract file's hash, or that of a calibration the contract lists under
-  `calibrations_superseded` (`tools/make_contract.py` adds the one it replaces).
+  `earlier_calibrations` (`tools/make_contract.py` adds the one it replaces).
 - **Inputs:** the first layer's width is `45 × max(history, 1)`, and the policy observes no term the runner doesn't feed.
 - **Band and bounds:** the band is at most 90° (180° for a get-up policy with bounds), a walker's at most the walking band, and
   `contract_stand_dd` equals the contract's stand.

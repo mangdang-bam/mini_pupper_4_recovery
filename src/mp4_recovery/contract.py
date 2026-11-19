@@ -64,6 +64,8 @@ BAND_DEG = np.array([20.0 if i in ABDUCTION else 60.0 for i in range(12)])
 ROBOT_BAND_MAX_DEG = 90.0                       # the widest band the robot runs without decoder bounds
 ROBOT_GETUP_BAND_MAX_DEG = 180.0                # the widest band of a get-up policy with decoder bounds
 POLICY_KINDS = ("walk", "getup")
+LEG_SETS = ("sku_2",)                           # the robot model's leg sets (``robot.sku2.Legs``)
+LEG_ALIASES = {"new": "sku_2"}                  # another name policy files may use for a leg set
 ABD_OUT_SIGN = (1.0, -1.0, -1.0, 1.0)           # per leg (FR, FL, RR, RL): the abduction's model / rel sign of "outward"
 TRACK_DD = (0.0, 3100.0)                        # the potentiometer's electrical track (dd); a ~50 deg dead zone beyond
 OBS_SIZE = 45
@@ -124,7 +126,7 @@ class Contract:
         return np.degrees(np.asarray(rel, dtype=float)) * self.signs
 
     def rel_from_ticks(self, ticks) -> np.ndarray:
-        """A policy target that the firmware path turns into exactly ``ticks`` (the teacher's targets)."""
+        """A policy target that the firmware path turns into exactly ``ticks`` (the targets that reproduce a firmware gait's ticks)."""
         return self.rel_from_servo_deg(self.servo_deg_of_tick(ticks))
 
     def rel_from_dd(self, dd) -> np.ndarray:
@@ -143,6 +145,14 @@ def calibration_refusal(meta: dict, contract: "Contract") -> str | None:
     if stand is not None and [int(v) for v in stand] != [int(v) for v in contract.stand_dd]:
         return "bounds made for another calibration (stand dd differ): re-export the policy for this contract"
     return None
+
+
+def leg_set_name(name: str | None) -> str:
+    """A leg set's name (``LEG_SETS``), an alias read as its leg set; None: the first."""
+    name = LEG_ALIASES.get(name, name) if name else LEG_SETS[0]
+    if name not in LEG_SETS:
+        raise ValueError(f"legs: one of {LEG_SETS}, not {name!r}")
+    return name
 
 
 def band_deg_array(spec=None) -> np.ndarray:

@@ -1,4 +1,4 @@
-"""The fitted servo model: what the compiled model and the actuators really run."""
+"""The MD01 servo model (BAM): what the compiled model and the actuators really run."""
 import mujoco
 import pytest
 import torch
@@ -14,7 +14,7 @@ N = 8
 @pytest.fixture(scope="module")
 def env():
     from mjlab.envs import ManagerBasedRlEnv
-    e = ManagerBasedRlEnv(cfg=make_env_cfg(TaskOptions(num_envs=N)), device="cuda:0")
+    e = ManagerBasedRlEnv(cfg=make_env_cfg(TaskOptions(num_envs=N, actuator="md01")), device="cuda:0")
     e.reset()
     yield e
     e.close()

@@ -36,14 +36,23 @@ def test_hand_ranges_reproduce_the_files_model_ranges():
 
 
 def test_ranges_take_the_narrower_of_hand_and_powered_per_side():
+    # the packaged file (traced by hand only: no powered range) gives the hand ranges
+    j = L.load()
     phys = L.physical_ranges()
-    assert phys["FL"]["abd_out"] == (-13.8, 25.9)          # inward: powered 13.8 < hand 16.7; outward: hand
-    assert phys["FR"]["abd_out"] == (-21.6, 23.3)          # powered went further both ways: hand
-    assert phys["RR"]["abd_out"] == (-13.8, 23.6)
-    assert phys["RL"]["abd_out"] == (-16.9, 28.2)
+    for d in j["legs"]:
+        assert d.get("abd_out_range_powered") is None
+        assert phys[d["leg"]]["abd_out"] == tuple(d["abd_out_range"])
+    hand = {d["leg"]: d["abd_out_range"] for d in j["legs"]}
     jr = L.joint_ranges()
-    assert np.allclose(np.degrees(jr["FL_hip"]), (-25.9, 13.8))       # FL: outward is - in the model
-    assert np.allclose(np.degrees(jr["FR_hip"]), (-21.6, 23.3))
+    stand = dict(zip(C.joint_order, C.stand_joint_rad))
+    fl, fr = hand["FL"], hand["FR"]
+    assert np.allclose(np.degrees(np.subtract(jr["FL_hip"], stand["FL_hip"])), (-fl[1], -fl[0]))  # FL: outward is -
+    assert np.allclose(np.degrees(np.subtract(jr["FR_hip"], stand["FR_hip"])), (fr[0], fr[1]))
+    # with a powered range: the narrower per side
+    j2 = json.loads(json.dumps(j))
+    d = next(x for x in j2["legs"] if x["leg"] == "FL")
+    d["abd_out_range"], d["abd_out_range_powered"] = [-16.7, 25.9], [-13.8, 26.6]
+    assert L.physical_ranges(j2)["FL"]["abd_out"] == (-13.8, 25.9)   # inward: powered 13.8 < hand 16.7; outward: hand
     for name, (lo, hi) in jr.items():
         hand = L.joint_ranges(hand_only=True)[name]
         assert hand[0] <= lo + 1e-12 and hi <= hand[1] + 1e-12
@@ -84,8 +93,9 @@ def test_decoder_bounds_abduction_and_tracks():
         lo, hi = _deg_rel(g, i)
         out_g, in_g = (hi, lo) if s > 0 else (-lo, -hi)
         assert abs(out_g - (a_out - 2.0)) < 1e-9 and abs(in_g - (a_in + 2.0)) < 1e-9, leg
-    # hips and knees: 20 deg inside the pot's track (dd 0 / 3100) at the contract's stand; the notes' table
-    room = {"FR": (163, 147), "FL": (119, 191), "RR": (180, 130), "RL": (162, 148)}       # hip: dd up / dd down
+    # hips and knees: 20 deg inside the pot's track (dd 0 / 3100) at the contract's stand; the hip's room from the
+    # contract's stand dd (deg down to dd 0 / up to dd 3100; the re-horned contract 74c42aee moved FR and FL)
+    room = {leg: (C.stand_dd[3 * li + 1] / 10.0, 310.0 - C.stand_dd[3 * li + 1] / 10.0) for li, leg in enumerate(L.LEGS)}
     for li, leg in enumerate(L.LEGS):
         for j in (1, 2):
             i = 3 * li + j
@@ -95,7 +105,8 @@ def test_decoder_bounds_abduction_and_tracks():
                 assert min(dd) >= 200 - 2 and max(dd) <= 2900 + 2, (leg, j, dd)
         up, dn = room[leg]
         lo, hi = _deg_rel(w, 3 * li + 1)
-        assert sorted([round(abs(lo)), round(abs(hi))]) == sorted([up - 20, dn - 20]), (leg, lo, hi)
+        got, want = sorted([abs(lo), abs(hi)]), sorted([up - 20, dn - 20])
+        assert all(abs(g - w) <= TICK for g, w in zip(got, want)), (leg, lo, hi, want)
 
 
 def _random_rel(n, seed=0, deg=150.0):
@@ -132,7 +143,9 @@ def test_knee_follows_the_hip():
     b = L.decoder_bounds("walk")
     for li in range(4):
         rel = np.zeros(12)
-        rel[3 * li + 1] = math.radians(100.0)               # hip 100 deg, knee servo at the stand: knee - thigh -100
+        i = 3 * li + 1                                      # the hip, turned 120 deg towards its wider track side
+        side = 1.0 if (b.hi[i] - C.stand_rel_rad[i]) > (C.stand_rel_rad[i] - b.lo[i]) else -1.0
+        rel[i] = side * math.radians(120.0)                 # knee servo at the stand: past the knee - thigh stop
         out = b.clamp_rel(rel, C.stand_rel_rad)
         m = (C.stand_rel_rad + out).reshape(4, 3)[li]
         calf = (m[2] - b.kc[li, 0] * m[1]) / b.kc[li, 1]
@@ -257,7 +270,9 @@ def test_export_meta_carries_bounds_and_offset(tmp_path):
 
 
 def test_eval_plant_flags_and_meta():
-    plain = {"limits": False, "stand_offset_abd_deg": 0.0, "widen_limits_deg": None}
+    plain = {"limits": False, "stand_offset_abd_deg": 0.0, "widen_limits_deg": None, "actuator": "md300",
+             "supply_v_range": None, "supply_drop_ohm_range": None, "r_scale_range": None, "legs": "sku_2",
+             "foot": "sphere"}
     assert L.eval_plant({}) == plain
     meta = {"limits": True, "stand_offset_abd_deg": 10.0}
     assert L.eval_plant(meta) == {**plain, "limits": True, "stand_offset_abd_deg": 10.0}

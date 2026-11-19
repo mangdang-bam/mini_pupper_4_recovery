@@ -9,11 +9,11 @@ the offsets on the Pi, and make the contract on any machine:
         --out src/mp4_recovery/data/sku2_contract.json
 
 Only ``offsets_deg``, ``stand_dd``, ``stand_ticks`` and ``calibration`` change; the file replaced is listed under
-``calibrations_superseded``, so policies exported for it still pass the contract check of ``runner check``.
+``earlier_calibrations``, so policies exported for it still pass the contract check of ``runner check``.
 
 **What must then be re-exported.** A policy's decoder bounds hold the limits of the potentiometer tracks measured from the
 stand, so they belong to one calibration, and ``runner run`` refuses a policy whose bounds were made for another stand. With the
-new contract in place, write each policy's bounds again (the network itself is unchanged; ``policies/getup_sim`` likewise):
+new contract in place, write each policy's bounds again (the network itself is unchanged):
 
     python -m mp4_recovery.export_policy --from-policy policies/walker policies/walker_new
     python -m mp4_recovery.export_policy --from-policy policies/getup policies/getup_new
@@ -41,7 +41,7 @@ def build(base_path, offsets, note: str) -> dict:
         raise ValueError(f"12 offsets expected, got {new.shape}")
     ticks = dataclasses.replace(base, offsets_deg=new).ticks_from_servo_deg(np.zeros(ACTION_SIZE))
     d = json.loads(Path(base_path).read_text())
-    d["calibrations_superseded"] = d.get("calibrations_superseded", []) + [
+    d["earlier_calibrations"] = d.get("earlier_calibrations", []) + [
         {"sha256": sha256(base_path), "note": note, "offsets_deg": [float(v) for v in base.offsets_deg]}]
     d.update(offsets_deg=[float(v) for v in new], stand_dd=[int(v) for v in base.dd_from_ticks(ticks)],
              stand_ticks=[int(v) for v in ticks], calibration=note)
