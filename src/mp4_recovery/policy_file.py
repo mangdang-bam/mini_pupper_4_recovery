@@ -45,14 +45,17 @@ class NumpyPolicy:
 
 def export(checkpoint, out_dir, scale, fixtures: int = 256, seed: int = 0, omni: bool = True,
            history: int = 0, band_deg=None, kind: str = "walk", getup_phase_s: float = 0.0, bounds: dict | None = None,
-           stand_offset_abd_deg: float = 0.0, action_filter_alpha: float = 0.0) -> Path:
+           stand_offset_abd_deg: float = 0.0, action_filter_alpha: float = 0.0, actuator: str = "md300",
+           legs: dict | None = None) -> Path:
     """``omni``: the policy observes the whole command (vx, vy, wz); the runner refuses vy / wz for one that does
     not. ``band_deg``: the band the policy was trained with (``contract.band_deg_array``; default the walking band);
     ``kind``: "walk" or "getup". ``getup_phase_s`` > 0 (a phased get-up): meta ``getup_phase_s``; the command's three
     floats then carry (phi, sin 2 pi phi, cos 2 pi phi), phi = the time since the get-up began / getup_phase_s, held at 1
     (the runner feeds it from its GETUP entry). ``bounds``: the decoder's clamps (``limits.decoder_bounds(kind).to_meta()``; meta ``limits``
     true); ``stand_offset_abd_deg``: the abduction stand offset (deg outward); ``action_filter_alpha``: the target
-    filter the policy was trained with (its final alpha; 0: none)."""
+    filter the policy was trained with (its final alpha; 0: none); ``actuator``: the servo model it was trained on
+    (``servo_model.ACTUATORS``; meta ``actuator``, which the evaluators take as their default). ``legs``: the legs the
+    policy was trained on (``robot.sku2.legs_meta``), meta ``legs``; None: no key."""
     if kind not in POLICY_KINDS:
         raise ValueError(f"kind {kind!r}: one of {POLICY_KINDS}")
     band = band_deg_array(band_deg)
@@ -86,9 +89,12 @@ def export(checkpoint, out_dir, scale, fixtures: int = 256, seed: int = 0, omni:
             "activation": "elu", "omni": bool(omni), "history": int(history),
             "kind": kind, "band_deg": [float(v) for v in band], "limits": bounds is not None, "bounds": bounds,
             "stand_offset_abd_deg": float(stand_offset_abd_deg), "action_filter_alpha": alpha,
+            "actuator": str(actuator),
             "hidden": [int(arrays[f"W{i}"].shape[0]) for i in range(len(lin) - 1)]}
     if norm is not None:
         meta["obs_normalizer"] = {"folded": True, "eps": obs_norm.EPS}
+    if legs is not None:
+        meta["legs"] = dict(legs)
     if getup_phase_s:
         if kind != "getup":
             raise ValueError("getup_phase_s needs kind 'getup'")

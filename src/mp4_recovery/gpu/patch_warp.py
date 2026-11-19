@@ -6,7 +6,7 @@ reports).
 When a geom touches more than 50 heightfield cells (a fallen body on fine terrain), mujoco_warp 3.7.0.1 skips the rest
 (``continue``) and prints a warning from the GPU kernel, for every geom pair and every physics substep. In training with
 thousands of falling robots that is millions of lines: it slows the run several-fold and fills the disk. The patch
-removes only the warning; the skip, and so the physics, is unchanged. The feet never reach the cap (a 4.9 mm sphere on
+removes only the warning; the skip, and so the physics, is unchanged. The feet never reach the cap (a 5.5 mm sphere on
 5 mm cells). The install script runs it; re-run it after reinstalling mujoco_warp.
 
 The file is replaced (a new file, then ``os.replace``), never written in place: uv hardlinks installed packages to its

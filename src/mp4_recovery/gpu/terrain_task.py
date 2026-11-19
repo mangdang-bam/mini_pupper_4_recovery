@@ -3,7 +3,8 @@
 - **terrain:** mjlab's generator with the sub-terrains of ``terrain.py``, a spawn per difficulty row and family.
 - **commands:** one fixed (vx, vy, wz) per env, written by the evaluation tools, observed whole (45 floats, or stacked
   frames for a policy with history).
-- **robot:** shins and feet collide with the base, a stiffer foot contact, the base's mass drawn per env.
+- **robot:** shins and feet collide with the base, a stiffer foot contact, the base's mass drawn per env; the legs and
+  feet (``legs``, ``foot``, ``foot_radius_m``: ``robot.sku2.Legs``).
 - **actions:** the policy's action scale and band; with ``limits`` the measured joint limits in the model and the
   decoder (``limits.py``); ``stand_offset_abd_deg`` shifts the abductions' stand outward.
 - **terminations:** a tilt beyond ``tilt_limit``, a body touching the ground, the time-out, leaving the terrain.
@@ -31,9 +32,9 @@ from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 from mp4_recovery.actuators import servo_model
 from mp4_recovery.gpu import terrain as terrain_mod
 from mp4_recovery.gpu.env_cfg import TaskOptions, make_env_cfg
-from mp4_recovery.robot.sku2 import FOOT_SITES, LEG_COLLISION_GEOMS, robot_cfg
+from mp4_recovery.robot.sku2 import (FOOT_SITES, LEG_COLLISION_GEOMS, FOOT_RADIUS_M, foot_site_clearance, legs_of,
+                                     robot_cfg)
 
-FOOT_R = 0.0049
 BORDER = 0.5
 SINGLE_ROW = ("square_walls", "stairs_built")
 
@@ -60,15 +61,18 @@ _fresh_raycasts()
 
 @dataclass
 class TerrainOptions(TaskOptions):
-    terrain: str = "rough"                  # "rough", "flat", "square_walls", "stairs_built"
+    terrain: str = "rough"                  # "rough", "flat", "square_walls", "stairs_built", "families"
     rows: int = 10                          # difficulty levels
+    families: tuple | None = None           # "families": the columns (terrain.family_columns)
+    difficulty_max: float = 1.0             # the last row's upper difficulty
+    relief_pitch: float | None = None       # "families": the reliefs' heightfield pitch (m; None: the sub-terrains')
     tile: float = terrain_mod.TILE_SIZE
     terrain_seed: int = 0
     max_init_level: int = 2
     band_deg: tuple | None = None           # the decoder's band about the stand, 12 values (servo order; deg); None:
                                             # the walking band 20/60/60 (contract.BAND_DEG)
     history: int = 0                        # actor observation history (0: 45 floats)
-    masses_json: str | None = "sku2_masses_478g.json"   # the robot with its Raspberry Pi heatsink
+    masses_json: str | None = "sku2_masses.json"        # the weighed robot (data/)
     self_collision: bool = True             # shins and feet collide with the base
     friction_range: tuple = (0.5, 1.3)
     # the feet's contact (timeconst, dampratio). MuJoCo's (0.02, 1) lets a walking foot sink 3.3 mm (p99); (0.01, 1)
@@ -84,6 +88,14 @@ class TerrainOptions(TaskOptions):
     widen_limits_deg: float | None = None   # hip and knee targets may go this far past their track ends (limits.py)
     stand_offset_abd_deg: float = 0.0       # the abductions' stand shifted outward; the clamps stay in the calibrated
                                             # stand's coordinates
+    legs: str = "sku_2"                     # the leg set (robot.sku2.Legs; robot/assets/sku_2: 59.75 mm shin)
+    foot: str = "sphere"                    # the feet: "sphere" (foot_radius_m) or "mesh" (the model's)
+    foot_radius_m: float = FOOT_RADIUS_M    # the foot sphere's radius
+
+
+def foot_r(opt) -> float:
+    """A foot site's height above flat ground at a foot contact (``sku2.foot_site_clearance``)."""
+    return foot_site_clearance(legs_of(opt))
 
 
 def out_of_bounds(env, half_x: float, half_y: float, margin: float = 0.3):
@@ -92,8 +104,9 @@ def out_of_bounds(env, half_x: float, half_y: float, margin: float = 0.3):
 
 
 def foot_heights_centre(env, sensor_name: str = "foot_height") -> torch.Tensor:
-    """Each foot's sphere centre above the terrain straight under it (the ring's centre ray; the site's current height,
-    the ray from the previous ``sense()``); 0 when the ray missed."""
+    """Each foot site above the terrain straight under it (the ring's centre ray; the site's current height, the ray from
+    the previous ``sense()``); 0 when the ray missed. A foot touches flat ground with its site at
+    ``foot_r(opt)``."""
     d = env.scene[sensor_name].data
     B, F = d.heights.shape[0], d.heights.shape[1]
     hit_z = d.hit_pos_w[..., 2].view(B, F, -1)[..., 0]
@@ -112,6 +125,8 @@ def _foot_site_ids(env):
 def sub_terrains(opt: TerrainOptions) -> dict:
     if opt.terrain == "rough":
         return terrain_mod.rough_sub_terrains(opt.tile)
+    if opt.terrain == "families":
+        return terrain_mod.family_columns(opt.families, opt.tile, opt.relief_pitch)
     if opt.terrain == "square_walls":  # four blocks of the printed tile, every edge a mirror line, with vertical sides
         return {"square_walls": terrain_mod.TileStripCfg(size=(opt.tile, opt.tile), n_long=2, n_wide=2, walls=True)}
     if opt.terrain == "stairs_built":  # one measured staircase
@@ -136,12 +151,12 @@ def make_terrain_env_cfg(opt: TerrainOptions | None = None):
     subs = sub_terrains(opt)
     rows = 1 if opt.terrain in SINGLE_ROW else opt.rows
     gen = TerrainGeneratorCfg(size=(opt.tile, opt.tile), sub_terrains=subs, num_rows=rows, curriculum=True,
-                              border_width=BORDER, seed=opt.terrain_seed)
+                              border_width=BORDER, seed=opt.terrain_seed, difficulty_range=(0.0, opt.difficulty_max))
     cfg.scene.terrain = TerrainEntityCfg(terrain_type="generator", terrain_generator=gen,
                                          max_init_terrain_level=opt.max_init_level if opt.level is None else 0)
-    cfg.scene.entities = {"robot": robot_cfg(servo_model.md01().actuators, strip_visuals=not opt.visuals,
+    cfg.scene.entities = {"robot": robot_cfg(servo_model.for_options(opt).actuators, strip_visuals=not opt.visuals,
                                              masses_json=opt.masses_json, self_collision=opt.self_collision,
-                                             foot_solref=opt.foot_solref, limits=opt.limits)}
+                                             foot_solref=opt.foot_solref, limits=opt.limits, legs=legs_of(opt))}
     half_x = rows * opt.tile / 2 + BORDER
     half_y = len(subs) * opt.tile / 2 + BORDER
 

@@ -1,4 +1,4 @@
-"""Terrain for the robot (hip height 70 mm, foot sphere r 4.9 mm): sub-terrains for mjlab's terrain generator.
+"""Terrain for the robot (hip height 70 mm, foot sphere r 5.5 mm): sub-terrains for mjlab's terrain generator.
 
 - ``low_poly_heights``: a low-poly relief (Delaunay triangles over a jittered grid, random heights). ``LowPolyRoughCfg``:
   that relief as a sub-terrain, amplitude rising and feature size falling with difficulty, inside a flat border.
@@ -7,6 +7,7 @@
   ground, with the floor-to-tile edges.
 - ``StairGridCfg``: a measured staircase built from solid boxes.
 - ``rough_sub_terrains``: mjlab's families rescaled to this robot plus the reliefs.
+- ``family_columns``: chosen families, rough or printed stairs, one generator column each.
 
 Heightfields here follow MuJoCo's layout: row index along y, column index along x (mjlab's own heightfield terrains
 pass x as rows, which transposes them; harmless for random terrain, not for a measured tile). Heights are kept as
@@ -14,6 +15,7 @@ floats (no vertical quantisation).
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +35,9 @@ from mp4_recovery import paths
 
 TILE_SIZE = 1.6               # m; a multiple of the printed 0.2 m tile
 SPAWN_FOOTPRINT = (0.22, 0.14)  # m; the robot's footprint at the stand, plus margin (spawn above its highest point)
+LEVELS = 10                   # difficulty levels: level k has difficulty in [k, k + 1) / LEVELS, however many are built
+PRINTED_STAIRS = {"stairs4": 4, "stairs8": 8}   # steps
+PRINTED_RISER, PRINTED_TREAD, PRINTED_WIDTH = 0.025, 0.05, 0.4     # m
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -382,3 +387,30 @@ def rough_sub_terrains(size: float = TILE_SIZE) -> dict[str, SubTerrainCfg]:
     subs["low_poly"].proportion = 0.25
     subs["raised_relief"] = RaisedReliefCfg(proportion=0.15, size=(size, size))
     return subs
+
+
+def printed_stairs(steps: int, size: float = TILE_SIZE) -> StairGridCfg:
+    """The printed flight, 400 mm wide, its top tread reaching the tile's far edge."""
+    layout = ((PRINTED_RISER, PRINTED_TREAD),) * steps
+    return StairGridCfg(size=(size, size), layout=layout, width=PRINTED_WIDTH, tag=f"stairs{steps}")
+
+
+def family_of(column: str) -> str:
+    return column.split(".")[0]
+
+
+def family_columns(names, size: float = TILE_SIZE, relief_pitch: float | None = None) -> dict[str, SubTerrainCfg]:
+    """A column per name, in order: a family of ``rough_sub_terrains`` or of ``PRINTED_STAIRS``. In curriculum mode a
+    family is one column whatever its proportion, so a share is set by repeating the name; the repeats are named
+    ``family.1``, ``family.2``, ... ``relief_pitch``: the reliefs' heightfield pitch (m)."""
+    rough = rough_sub_terrains(size)
+    out: dict[str, SubTerrainCfg] = {}
+    seen: dict[str, int] = {}
+    for name in names:
+        cfg = printed_stairs(PRINTED_STAIRS[name], size) if name in PRINTED_STAIRS else copy.deepcopy(rough[name])
+        if relief_pitch is not None and isinstance(cfg, (LowPolyRoughCfg, RaisedReliefCfg)):
+            cfg.pitch = relief_pitch
+        k = seen.get(name, 0)
+        seen[name] = k + 1
+        out[f"{name}.{k}" if k else name] = cfg
+    return out

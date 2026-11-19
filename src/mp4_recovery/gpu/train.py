@@ -2,8 +2,8 @@
 """Train the get-up policy with PPO (``getup_task``). ``scripts/recipes/getup.sh`` is the training path: a behaviour
 clone of the searched motions, then seven PPO steps of this script.
 
-    python -m mp4_recovery.gpu.train --limits --getup-phase 4 --getup-band 90 180 180 --obs-norm --envs 2048 \
-        --iters 1000 --out runs/getup --tag limits --resume runs/getup/<run>/model_1499.pt
+    python -m mp4_recovery.gpu.train --resume checkpoints/getup_start/model_6544.pt --limits --getup-phase 4 \
+        --getup-band 90 180 180 --obs-norm --envs 2048 --iters 1000 --out runs/getup
 
 ``--init-actor`` starts from a cloned actor (``getup_bc``), ``--resume`` fine-tunes a checkpoint: actor, critic,
 optimizer and iteration come from it. Either way the critic warms up first (``--critic-warmup``, value-only updates;
@@ -26,9 +26,15 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg, RslRlVecEnvWrapper
 
 from mp4_recovery import paths
+from mp4_recovery.eval import built_env
+from mp4_recovery.eval.built_env import masses_arg
+from mp4_recovery.actuators import servo_model
+from mp4_recovery.gpu.attachment import Attachment
 from mp4_recovery.gpu.env_cfg import STEPS_PER_ITER, describe, noise_profile
-from mp4_recovery.gpu.getup_task import GetupOptions, install_filter_ramp, make_getup_env_cfg
+from mp4_recovery.gpu.getup_task import (MIDFALL_OMEGA, GetupOptions, install_filter_ramp, make_getup_env_cfg,
+                                         terrain_options)
 from mp4_recovery.gpu.mdp import servo_action
+from mp4_recovery.limits import add_legs_args, eval_legs, legs_flags
 from mp4_recovery.obs_norm import freeze_updates
 from mp4_recovery.paths import sha256
 
@@ -54,7 +60,7 @@ def runner_cfg(a) -> dict:
     return cfg
 
 
-def main():
+def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--iters", type=int, default=2500)
@@ -65,6 +71,14 @@ def main():
     ap.add_argument("--resume", help="a model_<k>.pt to fine-tune")
     # the task
     ap.add_argument("--limits", action="store_true", help="the measured joint limits, in the model and the decoder")
+    ap.add_argument("--allow-limits-contract-mismatch", action="store_true",
+                    help="with --limits: train even though the packaged limits were traced at another contract than "
+                         "the one in force")
+    add_legs_args(ap, "sku_2")
+    ap.add_argument("--masses-json", type=masses_arg, metavar="PATH",
+                    help="the plant's masses file (a path, or a file name in src/mp4_recovery/data/; default the task's, "
+                         f"{GetupOptions.masses_json}); config.json records its path, sha256 and the built model's "
+                         "total mass")
     ap.add_argument("--widen-limits-deg", type=float, metavar="DEG",
                     help="let hip and knee targets go DEG past their potentiometer track ends instead of stopping 20 "
                          "deg inside them. Training directly inside the limits never learns to flip from the back")
@@ -77,6 +91,8 @@ def main():
                     help="the start mix (crouch partial side nose back random) at iteration 0, then from iteration "
                          "1000 on (normalised)")
     ap.add_argument("--getup-midfall", type=float, default=0.0, metavar="SHARE", help="the mid-fall starts' share")
+    ap.add_argument("--getup-midfall-omega", type=float, nargs=2, default=MIDFALL_OMEGA, metavar=("LO", "HI"),
+                    help="the mid-fall starts' rotation (rad/s)")
     ap.add_argument("--getup-end-on-success", action="store_true",
                     help="the episode ends when the success criterion has held 0.5 s")
     ap.add_argument("--getup-success-gyro", type=float, default=0.8,
@@ -91,7 +107,24 @@ def main():
     ap.add_argument("--getup-filter-start", type=float, metavar="A0", help="the alpha at this run's first iteration")
     ap.add_argument("--getup-filter-ramp", type=int, default=0, metavar="N",
                     help="A0 -> ALPHA linearly over this run's first N iterations")
+    ap.add_argument("--getup-terrain", action="store_true",
+                    help="half the columns flat, half the rough families and the printed stairs, levels 0-7")
+    ap.add_argument("--relief-pitch", type=float, metavar="M", help="--getup-terrain: the reliefs' heightfield pitch")
+    ap.add_argument("--getup-terrain-stairs", type=int, default=1, metavar="N",
+                    help="--getup-terrain: columns of each printed staircase")
+    ap.add_argument("--getup-rollover-cost", type=float, default=0.0, metavar="W",
+                    help="W >= 0: reward -W per second past 130 deg of tilt, in episodes that started below 100 deg")
+    ap.add_argument("--getup-attachment", action="store_true",
+                    help="a collision cylinder on the hood and its mass on the base, drawn per robot")
+    ap.add_argument("--getup-attachment-height", type=float, nargs=2, default=Attachment.height_mm, metavar=("LO", "HI"),
+                    help="how far it stands out of the hood (mm)")
+    ap.add_argument("--getup-attachment-mass", type=float, nargs=2, default=Attachment.mass_g, metavar=("LO", "HI"),
+                    help="its mass (g)")
+    ap.add_argument("--getup-attachment-x", type=float, nargs=2, default=Attachment.x_mm, metavar=("LO", "HI"),
+                    help="its axis, forward of the base origin (mm)")
+    ap.add_argument("--getup-attachment-radius", type=float, default=Attachment.radius_mm, help="its radius (mm)")
     # the networks and PPO
+    servo_model.add_args(ap)
     ap.add_argument("--actor-hidden", type=int, nargs="+", default=[512, 256, 128])
     ap.add_argument("--critic-hidden", type=int, nargs="+", default=[512, 256, 128])
     ap.add_argument("--obs-norm", action="store_true",
@@ -110,21 +143,50 @@ def main():
     ap.add_argument("--caps-spatial", type=float, default=0.0, metavar="LAMBDA", help="the spatial smoothness loss")
     ap.add_argument("--caps-obs-noise", type=float, default=0.0, metavar="SIGMA",
                     help="the spatial loss's perturbation, in the actor's normalised input units")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.resume and a.init_actor:
         raise SystemExit("--resume and --init-actor exclude each other")
+    if a.getup_rollover_cost < 0.0:
+        raise SystemExit("--getup-rollover-cost is a cost: W >= 0")
+    return a
 
+
+def task_options(a) -> GetupOptions:
+    """The training task's options from the flags (``--masses-json`` absent: the task's default masses)."""
     mix = {}
     if a.getup_mix:
         start, end = a.getup_mix[:6], a.getup_mix[6:]
         mix = {"mix_start": tuple(w / sum(start) for w in start), "mix_end": tuple(w / sum(end) for w in end)}
+    attachment = None
+    if a.getup_attachment:
+        attachment = Attachment(tuple(a.getup_attachment_height), tuple(a.getup_attachment_mass),
+                                tuple(a.getup_attachment_x), a.getup_attachment_radius)
     opt = GetupOptions(num_envs=a.envs, noisy=True, noise_ramp=True, randomise=True, noise_end=noise_profile(),
                        band_deg=tuple(a.getup_band), success_gyro=a.getup_success_gyro or None, phase_s=a.getup_phase,
                        end_on_success=a.getup_end_on_success, midfall=a.getup_midfall, limits=a.limits,
                        widen_limits_deg=a.widen_limits_deg, episode_s=a.getup_episode_s,
                        action_rate_weight=a.getup_action_rate, action_rate_tilted_scale=a.getup_action_rate_tilted,
                        joint_vel_weight=a.getup_joint_vel, filter_alpha=a.getup_filter,
-                       filter_alpha_start=a.getup_filter_start, filter_ramp_iters=a.getup_filter_ramp, **mix)
+                       filter_alpha_start=a.getup_filter_start, filter_ramp_iters=a.getup_filter_ramp,
+                       attachment=attachment, rollover_cost=a.getup_rollover_cost,
+                       midfall_omega=tuple(a.getup_midfall_omega), **mix, **servo_model.options_from_args(a),
+                       **eval_legs({}, **legs_flags(a)),
+                       **({"masses_json": a.masses_json} if a.masses_json else {}),
+                       **(terrain_options(a.relief_pitch, a.getup_terrain_stairs) if a.getup_terrain else {}))
+    return opt
+
+
+def main():
+    a = parse_args()
+    guard = None
+    if a.limits:            # the packaged limits' calibration against the contract in force (limits_contract_check)
+        from mp4_recovery.limits import limits_contract_check
+        try:
+            guard = limits_contract_check(a.allow_limits_contract_mismatch)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print("limits contract", json.dumps(guard), flush=True)
+    opt = task_options(a)
     env_cfg = make_getup_env_cfg(opt)
     env_cfg.seed = a.seed
     log_dir = Path(a.out) / (f"{datetime.now():%Y%m%d_%H%M%S}_s{a.seed}" + (f"_{a.tag}" if a.tag else ""))
@@ -133,6 +195,8 @@ def main():
 
     cfg = runner_cfg(a)
     env = ManagerBasedRlEnv(cfg=env_cfg, device="cuda:0")
+    built = built_env.record(env, opt)
+    print(built_env.line(built), flush=True)
     runner = MjlabOnPolicyRunner(RslRlVecEnvWrapper(env, clip_actions=1.0), cfg, str(log_dir), "cuda:0")
     if a.init_actor:
         sd = torch.load(a.init_actor, map_location="cuda:0", weights_only=False)["actor_state_dict"]
@@ -156,6 +220,7 @@ def main():
         "task": describe(opt), "runner": cfg, "noise": "measured", "init_std": a.init_std, "critic_warmup": a.critic_warmup,
         "obs_norm": a.obs_norm, "obs_norm_freeze_iters": a.obs_norm_freeze if a.obs_norm else None,
         "resume": a.resume, "resume_sha256": sha256(Path(a.resume)) if a.resume else None,
+        "masses_json": built["masses"], "built_env": {**built, "limits_contract": guard},
         "init_actor": a.init_actor, "init_actor_sha256": sha256(Path(a.init_actor)) if a.init_actor else None,
         "repo_commit": commit.stdout.strip(), "repo_dirty": bool(dirty.stdout.strip()), "argv": sys.argv},
         indent=1, default=str))

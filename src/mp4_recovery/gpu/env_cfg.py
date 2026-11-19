@@ -2,7 +2,8 @@
 
 One policy step is 20 ms (50 Hz) of twenty 1 ms physics steps. It holds the robot (fitted servo model, measured masses),
 the observations of ``contract.py``, the observation noise and its ramp, the command delay, the plant randomisation
-(the feet's friction, the base's center of mass), and the fall terminations.
+(the feet's friction, the base's center of mass; optionally the servos' supply voltage and winding resistance), and the
+fall terminations. ``actuator`` selects the servo model (``servo_model``: md300, the default, or md01).
 
 Observation noise is uniform with per-element half-widths. The ramp starts from a clean floor and ends at a profile
 measured on the robot (``data/noise_measured.json``: the sensor noise plus the broadband excess of the logs over the
@@ -11,7 +12,7 @@ simulation in motion).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
@@ -32,7 +33,7 @@ from mp4_recovery import paths
 from mp4_recovery.actuators import servo_model
 from mp4_recovery.actuators.bam_servo import bam_servo_init
 from mp4_recovery.gpu import mdp
-from mp4_recovery.robot.sku2 import BODY_CONTACT_BODIES, FOOT_GEOMS, robot_cfg
+from mp4_recovery.robot.sku2 import BODY_CONTACT_BODIES, FOOT_GEOMS, legs_of, robot_cfg
 
 DECIMATION = 20
 STEPS_PER_ITER = 24         # env steps per PPO iteration
@@ -62,6 +63,10 @@ class TaskOptions:
     action_scale: tuple = (0.25, 0.50, 0.50) * 4
     episode_s: float = 20.0
     visuals: bool = False                   # keep the meshes (rendering only)
+    actuator: str = servo_model.NAME        # the servo model: "md01" or "md300" (servo_model.ACTUATORS)
+    supply_v_range: tuple | None = None     # per-env servo supply voltage, uniform (V); None: the model's 12 V
+    supply_drop_ohm_range: tuple | None = None   # per-env pack + wiring resistance (Ohm), the bus sagging with the draw
+    r_scale_range: tuple | None = None      # per-env winding resistance scale, uniform (heat); None: the fitted R
 
 
 def install_noise(env, env_ids, start: dict, end: dict, ramp: bool):
@@ -84,7 +89,7 @@ def _obs_terms(noisy: bool) -> dict:
 
 def make_env_cfg(opt: TaskOptions | None = None) -> ManagerBasedRlEnvCfg:
     opt = opt or TaskOptions()
-    model = servo_model.md01()
+    model = servo_model.for_options(opt)
     critic = _obs_terms(False)
     critic.update({
         "lin_vel": ObservationTermCfg(func=mdp.obs_true_lin_vel),
@@ -143,7 +148,8 @@ def make_env_cfg(opt: TaskOptions | None = None) -> ManagerBasedRlEnvCfg:
         ranges=UniformVelocityCommandCfg.Ranges(lin_vel_x=(0.0, 0.0), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0)))}
     return ManagerBasedRlEnvCfg(
         scene=SceneCfg(terrain=TerrainEntityCfg(terrain_type="plane"), num_envs=opt.num_envs, env_spacing=1.0,
-                       entities={"robot": robot_cfg(model.actuators, strip_visuals=not opt.visuals)}, sensors=sensors),
+                       entities={"robot": robot_cfg(model.actuators, strip_visuals=not opt.visuals,
+                                                            legs=legs_of(opt))}, sensors=sensors),
         observations=observations,
         actions={"servo": mdp.ServoActionCfg(scale=tuple(opt.action_scale))},
         commands=commands,
@@ -163,11 +169,13 @@ def make_env_cfg(opt: TaskOptions | None = None) -> ManagerBasedRlEnvCfg:
 def describe(opt: TaskOptions) -> dict:
     """What a run's saved config must name: the options, the servo model and the sources' hashes."""
     from mp4_recovery import limits
-    from mp4_recovery.robot.sku2 import sources
-    model = servo_model.md01()
-    out = {"options": {k: (list(v) if isinstance(v, tuple) else v) for k, v in opt.__dict__.items()},
+    from mp4_recovery.robot.sku2 import legs_meta, sources
+    model = servo_model.for_options(opt)
+    out = {"options": {k: (list(v) if isinstance(v, tuple) else asdict(v) if is_dataclass(v) else v)
+                       for k, v in opt.__dict__.items()},
            "servo_model": model.name, "servo_params": model.params, "latency_steps": list(model.latency_steps),
-           "decimation": DECIMATION, "physics_dt": servo_model.PHYSICS_DT, "sources": sources()}
+           "decimation": DECIMATION, "physics_dt": servo_model.PHYSICS_DT, "sources": sources(legs_of(opt))}
+    out["legs"] = legs_meta(legs_of(opt))
     if getattr(opt, "limits", False):
         out["limits"] = limits.describe(True, getattr(opt, "kind", "walk"), getattr(opt, "stand_offset_abd_deg", 0.0))
         out["sources"][str(limits.LIMITS_JSON.relative_to(paths.REPO))] = limits.LIMITS_SHA256

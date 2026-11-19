@@ -19,17 +19,23 @@ friction, center-of-mass, mass and delay draws, the observation noise and its ra
   overlaps the floor or itself by more than 2 mm is drawn again.
 - **Rewards** (mjlab multiplies every term by dt, so a weight is per second of the term's value; the progress terms are
   signed differences divided by dt, so an episode's sum telescopes and oscillating earns nothing):
-  ``upright_progress`` 5 x d cos(tilt); ``height_progress`` 30 x d min(z, 0.0725 m); ``fallen_tax`` -0.5 per second
+  ``upright_progress`` 5 x d cos(tilt); ``height_progress`` 30 x d min(z, ``stand_z``) (the spawn height,
+  ``sku2.init_base_z``, 74.7 mm); ``fallen_tax`` -0.5 per second
   while tilt > 25 deg or z < 0.05 m; ``success`` +10 once per episode when the criterion has held 0.5 s (tilt < 12 deg,
   joint rms < 10 deg from the stand, base above 0.05 m, and optionally |gyro| < 0.8 rad/s; without the height a robot on
   its belly in the stand pose passes); ``stand_track`` exp(-rms^2 / 0.1) gated on tilt < 30 deg and z > 0.05 m;
   ``action_rate`` (``action_rate_weight``, x ``action_rate_tilted_scale`` while tilt > 40 deg); ``torques`` -1e-4;
-  ``joint_vel`` (``joint_vel_weight``).
+  ``joint_vel`` (``joint_vel_weight``); ``rollover`` (``rollover_cost``): per second past 130 deg of tilt, in episodes that
+  started below 100 deg, so a start on the back is never charged.
 - **Collisions** (``getup_collisions``, this task only): leg <-> leg (thigh and calf capsules and the feet of different
   legs) and leg <-> hip cans, on top of the walker's shin and foot <-> base. MuJoCo filters parent-child pairs only, so a
   calf against its own leg's hip can stays a pair. Without the measured limits thigh <-> base is on too, each thigh
   capsule shortened at its hip end (the model's thighs overlap the base box at the stand). With the limits that pair is
   off: its inward contact comes at 2-7 deg against the robot's measured 14-22, and the decoder's hip envelope covers it.
+- **Terrain** (``terrain_options``: half the columns flat, half rough families and printed stairs): a cell and a position
+  are drawn at every reset (``terrain_spawn.TerrainSpawn``), the base's height is above the ground under it (flat: the
+  same number), the critic sees that height, and on a rough column success is ``terrain_up_now`` (flat columns as above).
+- **Attachment** (``attachment``): a cylinder on the hood and its mass, drawn per robot (``gpu.attachment``).
 """
 from __future__ import annotations
 
@@ -51,10 +57,12 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.tasks.velocity import mdp as vel_mdp
 from mjlab.utils.lab_api.math import quat_apply, quat_from_angle_axis, quat_mul, random_orientation
 
-from mp4_recovery.gpu import mdp
+from mp4_recovery.gpu import mdp, terrain_spawn
+from mp4_recovery.gpu.attachment import Attachment, install_attachment
 from mp4_recovery.gpu.env_cfg import STEPS_PER_ITER
+from mp4_recovery.gpu.terrain import LEVELS, PRINTED_STAIRS
 from mp4_recovery.gpu.terrain_task import TerrainOptions, make_terrain_env_cfg, servo_limits
-from mp4_recovery.robot.sku2 import INIT_BASE_Z, LEGS
+from mp4_recovery.robot.sku2 import LEGS, init_base_z, legs_of
 
 GETUP_SCALE = 1.57                  # rad per unit action, every joint
 GETUP_BAND_DEG = (90.0, 90.0, 90.0)  # abduction, hip, knee about the stand
@@ -72,7 +80,7 @@ SUCCESS_TILT_DEG = 12.0
 SUCCESS_GYRO = 0.8
 SUCCESS_RMS_DEG = 10.0
 SUCCESS_HOLD_S = 0.5
-STAND_Z = INIT_BASE_Z               # 0.0725 m: the height progress is capped here
+STAND_Z = 0.0747                    # m: the height progress's default cap (the task passes ``sku2.init_base_z``)
 FALLEN_TILT_DEG, FALLEN_Z = 25.0, 0.05
 TRACK_TILT_DEG, TRACK_Z = 30.0, 0.05
 OVERLAP_M = 0.002                   # a spawn penetrating the floor or itself by more than this is drawn again
@@ -80,6 +88,11 @@ LEG_BIT, CAN_BIT, BASE_BIT = 8, 16, 4
 BLOWUP_LIN_MPS, BLOWUP_ANG_RADPS, BLOWUP_JOINT_RADPS = 10.0, 100.0, 300.0
 CONTACT_SOLREF = (0.005, 1.0)       # (timeconst, dampratio) of the body's and legs' contacts (MuJoCo's default 0.02)
 THIGH_SHORT_M = 0.008               # 6 mm clears every thigh at the stand (FR by 0.01 mm); 8 mm leaves 0.16 mm
+ROUGH_FAMILIES = ("low_poly", "raised_relief", "slope_up", "slope_down", "boxes", "stairs_up", "stairs_down")
+TERRAIN_FAMILIES = ROUGH_FAMILIES + tuple(PRINTED_STAIRS)
+TERRAIN_ROWS = 8                    # levels 0-7 of terrain.LEVELS
+TERRAIN_NCONMAX, TERRAIN_NJMAX = 256, 800
+ROLLOVER_TILT_DEG, ROLLOVER_START_DEG = 130.0, 100.0
 
 
 @dataclass
@@ -121,6 +134,9 @@ class GetupOptions(TerrainOptions):
                                             # applied target's change
     filter_alpha_start: float | None = None # training: the alpha at this run's first iteration (None: filter_alpha)
     filter_ramp_iters: int = 0              # training: start -> filter_alpha over this many of the run's iterations
+    attachment: Attachment | None = None    # a cylinder on the hood and its mass, drawn per robot
+    rollover_cost: float = 0.0              # > 0: reward -this per second of rolling over (RolloverCost)
+    midfall_omega: tuple = MIDFALL_OMEGA    # mid-fall starts: the rotation's range (rad/s)
 
     def __post_init__(self):
         self.band_deg = band12(self.band_deg)   # 12 floats, servo order: what export_policy writes for the runner
@@ -129,6 +145,14 @@ class GetupOptions(TerrainOptions):
         if self.midfall:
             self.mix_start = with_midfall(self.mix_start or MIX_START, self.midfall)
             self.mix_end = with_midfall(self.mix_end or MIX_END, self.midfall)
+
+
+def terrain_options(relief_pitch: float | None = None, stairs_repeat: int = 1) -> dict:
+    """``GetupOptions`` for training on terrain: half the columns flat, the other half a column per family, the printed
+    stairs ``stairs_repeat`` times."""
+    rough = ROUGH_FAMILIES + tuple(PRINTED_STAIRS) * stairs_repeat
+    return {"terrain": "families", "families": ("flat",) * len(rough) + rough,
+            "rows": TERRAIN_ROWS, "difficulty_max": TERRAIN_ROWS / LEVELS, "relief_pitch": relief_pitch}
 
 
 def mirror_joints() -> tuple[list[int], list[float]]:
@@ -234,7 +258,14 @@ def tilt_deg(env) -> torch.Tensor:
 
 
 def base_z(env) -> torch.Tensor:
-    return env.scene["robot"].data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    """The base's height above the floor; on terrain, above the ground under it."""
+    p = env.scene["robot"].data.root_link_pos_w
+    spawn = getattr(env, "terrain_spawn", None)
+    return p[:, 2] - (env.scene.env_origins[:, 2] if spawn is None else spawn.ground.under(p[:, :2]))
+
+
+def obs_local_height(env) -> torch.Tensor:
+    return base_z(env)[:, None]
 
 
 def joint_rms(env) -> torch.Tensor:
@@ -251,9 +282,21 @@ def success_now(env, gyro_max: float | None = SUCCESS_GYRO) -> torch.Tensor:
     return ok
 
 
+def terrain_up_now(env, on_stairs: torch.Tensor) -> torch.Tensor:
+    """Up on rough ground: tilted no more than the slope asks, near the stand, nearly still, on at least three feet."""
+    feet = (env.scene["feet_contact"].data.found > 0).reshape(env.num_envs, -1).sum(-1)
+    tilt_max = torch.where(on_stairs, terrain_spawn.UP_TILT_STAIRS_DEG, terrain_spawn.UP_TILT_DEG)
+    return ((tilt_deg(env) < tilt_max) & (joint_rms(env) < math.radians(terrain_spawn.UP_RMS_DEG))
+            & (env.scene["robot"].data.root_link_ang_vel_b.norm(dim=-1) < terrain_spawn.UP_GYRO)
+            & (feet >= terrain_spawn.UP_FEET))
+
+
 def goal_now(env, gyro_max: float | None = SUCCESS_GYRO) -> torch.Tensor:
-    """The instantaneous success criterion: ``success_now`` and the base above ``TRACK_Z``."""
-    return success_now(env, gyro_max) & (base_z(env) > TRACK_Z)
+    """The instantaneous success criterion: ``success_now`` and the base above ``TRACK_Z``; on a rough column,
+    ``terrain_up_now``."""
+    ok = success_now(env, gyro_max) & (base_z(env) > TRACK_Z)
+    spawn = getattr(env, "terrain_spawn", None)
+    return ok if spawn is None else torch.where(spawn.flat, ok, terrain_up_now(env, spawn.on_stairs))
 
 
 def contact_penetration(env) -> tuple[torch.Tensor, torch.Tensor]:
@@ -409,15 +452,20 @@ class GetupStart(ManagerTermBase):
             self._exact = ex.to(dev)
             self._fixed_random = torch.tensor([s == "random" for s in names], device=dev)
             self.start_name = names
+        if p.get("on_terrain"):
+            env.terrain_spawn = terrain_spawn.TerrainSpawn(env)
 
     def __call__(self, env, env_ids, band_deg: tuple, spawn_z: tuple, curriculum_iters: int,
                  start_joints: str = "random", fixed_starts=None, fixed_iter=None, max_tries: int = 12,
-                 mix_start=None, mix_end=None):
+                 mix_start=None, mix_end=None, on_terrain: bool = False, midfall_omega: tuple = MIDFALL_OMEGA,
+                 stand_z: float = STAND_Z):
         ids = _ids(env, env_ids)
         m = len(ids)
         if m == 0:
             return
         dev = env.device
+        if on_terrain:
+            env.terrain_spawn.place(ids)
         it = int(env.common_step_counter) // STEPS_PER_ITER if fixed_iter is None else int(fixed_iter)
         robot = env.scene["robot"]
         act = mdp.servo_action(env)
@@ -473,8 +521,8 @@ class GetupStart(ManagerTermBase):
             z = z + torch.where(lift, floor + 0.002, 0.0)
         if bool(mid.any()):          # mid-fall: rotating further about the tilt axis, about the feet
             w_axis = quat_apply(qyaw, axis)                                       # the axis in the world (yawed)
-            omega = w_axis * _u(m, MIDFALL_OMEGA[0], MIDFALL_OMEGA[1], dev)[:, None]
-            r = quat_apply(quat, torch.tensor([0.0, 0.0, STAND_Z], device=dev).expand(m, 3))
+            omega = w_axis * _u(m, midfall_omega[0], midfall_omega[1], dev)[:, None]
+            r = quat_apply(quat, torch.tensor([0.0, 0.0, stand_z], device=dev).expand(m, 3))
             vel = torch.cat([torch.cross(omega, r, dim=-1), omega], -1)
             robot.write_root_link_velocity_to_sim(vel[mid], env_ids=ids[mid])
         self.spawn_height[ids] = z
@@ -546,10 +594,18 @@ class UprightProgress(ManagerTermBase):
 
 
 class HeightProgress(UprightProgress):
-    """(min(z_t, 0.0725) - min(z_{t-1}, 0.0725)) / dt, signed; 0 on an episode's first step."""
+    """(min(z_t, S) - min(z_{t-1}, S)) / dt, signed, S = ``stand_z`` (param; the spawn height); 0 on an
+    episode's first step."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self.stand_z = float(cfg.params.get("stand_z", STAND_Z))
 
     def value(self, env):
-        return base_z(env).clamp(max=STAND_Z)
+        return base_z(env).clamp(max=self.stand_z)
+
+    def __call__(self, env, stand_z: float = STAND_Z):
+        return super().__call__(env)
 
 
 def fallen(env):
@@ -581,7 +637,7 @@ class GetupSuccess(ManagerTermBase):
         self.t_success[ids] = -1.0
 
     def __call__(self, env, gyro_max: float | None = SUCCESS_GYRO):
-        ok = success_now(env, gyro_max) & (base_z(env) > TRACK_Z)
+        ok = goal_now(env, gyro_max)
         self.run = torch.where(ok, self.run + 1, torch.zeros_like(self.run))
         fire = (self.run >= self.hold) & ~self.done
         self.done |= fire
@@ -609,6 +665,21 @@ class GetupActionRate(ManagerTermBase):
         return r * torch.where(tilt_deg(env) > 40.0, tilted_scale, 1.0)
 
 
+class RolloverCost(ManagerTermBase):
+    """1 while tilted past ``ROLLOVER_TILT_DEG``, in an episode whose spawn was tilted below ``ROLLOVER_START_DEG``."""
+
+    def __init__(self, cfg, env):
+        super().__init__(env)
+        self.charged = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids=None):
+        ids = slice(None) if env_ids is None else env_ids
+        self.charged[ids] = tilt_deg(self._env)[ids] < ROLLOVER_START_DEG        # the reset events have run
+
+    def __call__(self, env):
+        return ((tilt_deg(env) > ROLLOVER_TILT_DEG) & self.charged).float()
+
+
 def getup_joint_vel(env) -> torch.Tensor:
     """Sum of the squared joint velocities (rad/s) of the twelve leg joints: the smoothness cost on flailing legs."""
     act = mdp.servo_action(env)
@@ -629,7 +700,7 @@ class SuccessReached(ManagerTermBase):
         self.run[slice(None) if env_ids is None else env_ids] = 0
 
     def __call__(self, env, gyro_max: float | None = SUCCESS_GYRO):
-        ok = success_now(env, gyro_max) & (base_z(env) > TRACK_Z)
+        ok = goal_now(env, gyro_max)
         self.run = torch.where(ok, self.run + 1, torch.zeros_like(self.run))
         return self.run >= self.hold
 
@@ -837,9 +908,12 @@ def install_filter_ramp(runner, servo, alpha: float, start: float | None = None,
 
 def make_getup_env_cfg(opt: GetupOptions | None = None):
     opt = opt or GetupOptions()
-    assert opt.terrain == "flat" and opt.rows == 1 and not opt.history, (opt.terrain, opt.rows, opt.history)
+    on_terrain = opt.terrain == "families"
+    assert on_terrain or (opt.terrain == "flat" and opt.rows == 1), (opt.terrain, opt.rows)
+    assert not opt.history
     cfg = make_terrain_env_cfg(opt)
     band = band12(opt.band_deg)
+    stand_z = init_base_z(legs_of(opt))     # the height progress's cap and the mid-fall's pivot height
 
     robot = cfg.scene.entities["robot"]
     # with the measured limits the abduction stops are joint ranges and the hip-abduction coupling the decoder's
@@ -861,6 +935,8 @@ def make_getup_env_cfg(opt: GetupOptions | None = None):
         cfg.observations["critic"].terms.pop(t, None)
     assert list(cfg.observations["actor"].terms) == ["ang_vel", "gravity", "command", "pos", "vel", "prev_action"]
     cfg.observations["actor"].history_length = 0
+    if on_terrain:
+        cfg.observations["critic"].terms["height"] = ObservationTermCfg(func=obs_local_height)
 
     # action: the get-up scale and band, the decoder seeded from the measured pose
     cfg.actions["servo"] = mdp.ServoActionCfg(scale=tuple(opt.action_scale), band_deg=band, seed_from_measured=True,
@@ -873,12 +949,13 @@ def make_getup_env_cfg(opt: GetupOptions | None = None):
     cfg.events["getup_start"] = EventTermCfg(func=GetupStart, mode="reset", params={
         "band_deg": band, "spawn_z": tuple(opt.spawn_z), "curriculum_iters": opt.curriculum_iters,
         "start_joints": opt.start_joints, "fixed_starts": tuple(opt.fixed_starts) if opt.fixed_starts else None,
-        "fixed_iter": opt.fixed_iter, "mix_start": opt.mix_start, "mix_end": opt.mix_end})
+        "fixed_iter": opt.fixed_iter, "mix_start": opt.mix_start, "mix_end": opt.mix_end,
+        "on_terrain": on_terrain, "midfall_omega": tuple(opt.midfall_omega), "stand_z": stand_z})
 
     # rewards (weights per second: mjlab multiplies by dt)
     cfg.rewards = {
         "upright_progress": RewardTermCfg(func=UprightProgress, weight=5.0, params={}),
-        "height_progress": RewardTermCfg(func=HeightProgress, weight=30.0, params={}),
+        "height_progress": RewardTermCfg(func=HeightProgress, weight=30.0, params={"stand_z": stand_z}),
         "fallen_tax": RewardTermCfg(func=fallen, weight=-0.5),
         "success": RewardTermCfg(func=GetupSuccess, weight=10.0, params={"gyro_max": opt.success_gyro}),
         "stand_track": RewardTermCfg(func=stand_track, weight=1.0, params={"tilt_max_deg": opt.track_tilt_deg}),
@@ -887,6 +964,7 @@ def make_getup_env_cfg(opt: GetupOptions | None = None):
                                              "applied": filter_on(opt)}),
         "torques": RewardTermCfg(func=mdp.torques_l2, weight=-1.0e-4),
         **({"joint_vel": RewardTermCfg(func=getup_joint_vel, weight=opt.joint_vel_weight)} if opt.joint_vel_weight else {}),
+        **({"rollover": RewardTermCfg(func=RolloverCost, weight=-opt.rollover_cost, params={})} if opt.rollover_cost else {}),
     }
 
     # terminations: the time-out (and the blow-up guard); curriculum: the noise ramp only
@@ -899,9 +977,11 @@ def make_getup_env_cfg(opt: GetupOptions | None = None):
     if opt.end_on_success:
         cfg.terminations["success"] = TerminationTermCfg(func=SuccessReached, params={"gyro_max": opt.success_gyro})
     cfg.curriculum = {k: v for k, v in cfg.curriculum.items() if k == "noise_ramp"}
-    cfg.sim.njmax = opt.njmax
-    cfg.sim.nconmax = opt.nconmax
+    cfg.sim.njmax = TERRAIN_NJMAX if on_terrain else opt.njmax
+    cfg.sim.nconmax = TERRAIN_NCONMAX if on_terrain else opt.nconmax
     cfg.episode_length_s = opt.episode_s
+    if opt.attachment is not None:
+        install_attachment(cfg, opt.attachment)
     return cfg
 
 
