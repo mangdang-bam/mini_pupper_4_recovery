@@ -95,8 +95,6 @@ python tools/getup_stream.py --policy policies/getup         # back, left, right
 tools/deploy.sh ubuntu@PI walk                               # copies runs/streams/ too
 ```
 
-For another policy, `--policy policies/getup_sim`: the files start with the policy's folder name.
-
 Then on the Pi, after the start-up checks, one file at a time, each start at 25 % before full speed:
 
 ```sh
@@ -107,7 +105,7 @@ $M stream runs/streams/getup_back_s14_x1p00.npz --cap 2000 --log logs/lifted_bac
 
 Each one ramps from where the legs are to the first pose in 2 s, holds 1 s, plays, ramps back to the stand in 1 s, holds 1 s and goes
 limp. It runs in the firmware's get-up mode, so **there's no current guard**. It refuses a file with a target near a track end, and stops
-and returns to the stand if a joint reads within 15° of one, a housing holds 55 °C for 1 s, or the firmware doesn't echo the get-up mode.
+and returns to the stand if a joint reads within 15° of one, a housing holds 55 °C for 1 s (`--stop-c`), or the firmware doesn't echo the get-up mode.
 
 Watch for a leg hitting the body or another leg, a joint moving the wrong way or lagging far behind the others, and any grinding or
 clicking from an abduction. **Enter** stops and returns to the stand; Ctrl-C goes limp at once. Stop for good if you see any of these,
@@ -144,8 +142,6 @@ Sideways is `--vy 0.05`, turning is `--wz 0.5`. Use a new log name each time.
 - **`--getup-max`** (default 10): get-ups allowed in one run; the next fall goes limp.
 - **`--getup-timeout`** (default 20 s): not up after this long in one get-up, limp.
 - **`--getup-phase-restart`** (default 1 s): the retry. Leave it on: at 0, a missed first attempt never tries again.
-- **`--getup-policy policies/getup_sim`** uses a newer get-up in place of `policies/getup`. It has been tested in simulation only,
-  never on a robot: do a [lifted playback](#lifted-playback) first.
 
 The logs go to `<log>.npz` (every frame), `<log>.policy.npz` (every policy step and get-up) and `<log>.stand.json`. They're
 written only at the end of a run, so run `sync` on the Pi after one you care about. Copied to the workstation, a folder of them
@@ -174,16 +170,16 @@ stateDiagram-v2
 ```
 
 - **Hand-back:** tilt under 12°, gyro under 0.8 rad/s and the pose within 10° rms of the stand, all held for 25 steps (0.5 s).
-- **Soft faults:** an invalid IMU frame, a non-finite action, a gap in the STATE frames, two late steps in a row, a servo at 55 °C
-  for 1 s.
+- **Soft faults:** an invalid IMU frame, a non-finite action, a gap in the STATE frames, two late steps in a row.
 - **Limp at once, from any state:** Ctrl-C, a link fault or firmware guard, a target that fails its check, no get-up echo from
   the firmware for 0.2 s.
 
 ### Refusals before arming
 
-A latched fault, a servo gain that doesn't read back, no valid IMU, a servo at 45 °C or more, a joint reading within 10° of a
-potentiometer track end (`implausible positions`: move that leg by hand and launch again), and a policy whose bounds were
-made for another calibration.
+A latched fault, a servo gain that doesn't read back, no valid IMU, a joint reading within 10° of a potentiometer track end
+(`implausible positions`: move that leg by hand and launch again), a policy trained on another servo model or robot model, a
+policy whose bounds were made for another calibration, and a gyro bias over 0.02 rad/s on any axis in the first second (the
+robot moved: keep it still and launch again).
 
 ## Placing it
 
@@ -215,8 +211,8 @@ For `--start-mode getup`:
 $M ping --seconds 1 | grep "max temp"
 ```
 
-The runner refuses to start at 45 °C and stops at 55 °C held for 1 s (limp during a get-up); the firmware cuts out at 60 °C for
-1 s. Measured: an 8 s get-up about +1 °C; 40 s of shoves +3 to +4 °C; a 30 s stand about +3 °C (the wider stance loads the
+The firmware holds the temperature rules: it refuses to arm with a hot servo and goes limp when one stays hot (the runner has
+none of its own). Measured: an 8 s get-up about +1 °C; 40 s of shoves +3 to +4 °C; a 30 s stand about +3 °C (the wider stance loads the
 abductions). The front legs run hottest. About 10 minutes limp, or with the servos off, brings it down. A reading can spike for one
 frame, to double the real value: check again before worrying.
 
@@ -310,8 +306,7 @@ python -m mp4_recovery.deploy.runner check --policy policies/walker_new
 python -m mp4_recovery.deploy.runner check --policy policies/getup_new
 ```
 
-The networks don't change. Move the two `_new` folders over `policies/walker` and `policies/getup`, do the same for
-`policies/getup_sim`, and deploy. `runner check` says
+The networks don't change. Move the two `_new` folders over `policies/walker` and `policies/getup`, and deploy. `runner check` says
 `exported for an earlier calibration`: that's expected, the policy's recorded contract hash is the replaced one.
 
 Where the stand moved far along a joint's track, the new bounds can cut motions the policy learned. Compare them with the old

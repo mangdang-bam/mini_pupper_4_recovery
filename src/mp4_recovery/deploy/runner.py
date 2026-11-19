@@ -12,7 +12,8 @@ filter, the fall detector and the heading loop, in tick order. Each step builds 
 the policy, decodes its action into targets (``contract.ActionDecoder``: clip, scale, band, 20 deg step limit, joint limits,
 the firmware's ticks) and sends one SET_ALL.
 
-**The sequence.** One second with the servos idle measures the gyro's bias: keep the robot still. A ramp to the walking
+**The sequence.** One second with the servos idle measures the gyro's bias: keep the robot still (a bias over
+``GYRO_BIAS_MAX`` on any axis refuses the run: the robot moved). A ramp to the walking
 policy's stand follows, then the policy loop. With ``--start-mode getup`` (the robot placed lying down) there is no ramp: the
 loop starts in the get-up.
 
@@ -20,25 +21,32 @@ loop starts in the get-up.
 policy at the next step: its decoder seeded from the measured pose, the observation rebuilt, the command inputs carrying its
 phase clock, and SA_GETUP on every SET_ALL (the firmware's get-up mode: current guard off; its ST_GETUP echo must follow within 0.2 s).
 **A retry:** when the phase has been at its end for ``--getup-phase-restart`` s and the tilt is still above 45 deg, the clock
-restarts. **The hand-back:** tilt < 12 deg, |gyro| < 0.8 rad/s and the pose within 10 deg rms of the stand, held for 25 steps,
-returns to the walking policy, its decoder seeded from the measured pose and the heading re-latched. Not up after
+restarts. **The hand-back:** tilt < 12 deg, |gyro| < 0.8 rad/s and the pose within 10 deg rms of the stand (``--handback-tilt``,
+``--handback-gyro``, ``--handback-rms``), held for 25 steps, returns to the walking policy, its decoder seeded from the measured
+pose and the heading re-latched. Not up after
 ``--getup-timeout`` s, or one fall more than ``--getup-max``: limp, and the run ends.
 
-**Stops.** The end of ``--seconds``, Enter, an invalid IMU frame, a non-finite action, a STATE gap, two late steps in a row or
-a servo at 55 degC for 1 s: ramp to the stand, hold, disarm; during a get-up, limp at once (no ramp from a fallen pose). Ctrl-C, a
+**Stops.** The end of ``--seconds``, Enter, an invalid IMU frame, a non-finite action, a STATE gap or two late steps in a
+row: ramp to the stand, hold, disarm; during a get-up, limp at once (no ramp from a fallen pose). Ctrl-C, a
 link fault or a target that fails its check: limp at once. A latched fault refuses the next launch until ``--clear``.
 
 **The first step.** The firmware disarms 100 ms after the last frame, and between the ramp's last send and the first step nothing
 else is sent. So one step of each policy runs before arming (``Runner.warm_up``: first calls are slow, and hold the interpreter),
 and until the first step the last target is repeated on every STATE frame (``Runner.keep_fed``).
 
-**Refusals before arming.** A latched fault, a servo gain that does not read back, no valid IMU, a servo at 45 degC, a joint
-reading within 10 deg of a track end, a policy whose bounds were made for another calibration (``checks.band_refusal``), a
-decoder that can reach a target too near a track end (``checks.decoder_selftest``). A difference between the robot's offsets
-and the contract's is printed and logged.
+**Refusals before arming.** A latched fault, a servo gain that does not read back (pwm_scale, register 12: within 2 % of
+0.001), no valid IMU, a joint reading within 10 deg of a track end, a policy trained on another servo model or robot model
+(``checks.robot_refusal``), a policy whose bounds were made for another calibration (``checks.band_refusal``), a decoder
+that can reach a target too near a track end (``checks.decoder_selftest``), a gyro bias over ``GYRO_BIAS_MAX``. The servos'
+temperatures are the firmware's to guard: it refuses to arm with a hot servo and goes limp when one stays hot. A
+difference between the robot's offsets and the contract's is printed and logged.
 
 **Watches (they print and log; nothing stops).** During a get-up, a servo above 1.2 A for more than 1 s. At the start and
 during a get-up, a position reading within 5 deg of a track end.
+
+**Position feedback.** Every STATE frame's joint readings go through the link's plausibility filter
+(``deploy/feedback.py``): the observation, the hand-back, the decoder's restarts and the reading watch use the filtered
+positions; the logs keep the raw ones with a ``pos_reject`` mask; the run ends by printing the rejections.
 
 **Logs.** ``<log>.npz``: every STATE and SET_ALL. ``<log>.policy.npz``: per step the STATE tick used, times, observation, raw
 action, target, command, ``mode`` (0 walk, 1 get-up), filtered tilt and |gyro|; its meta lists every get-up (``getups``: entry,
@@ -62,19 +70,22 @@ from mp4_recovery import paths
 from mp4_recovery.contract import (CONTRACT_JSON, CONTROL_DT, TRACK_DD, ActionDecoder, Contract, HistoryStacker,
                                    has_heading_obs, obs_size, policy_band_deg, policy_bounds, policy_filter_alpha, policy_kind,
                                    policy_stand_offset_deg)
-from mp4_recovery.deploy.checks import TARGET_END_DEG, band_refusal, decoder_selftest, target_refusal
+from mp4_recovery.deploy.checks import TARGET_END_DEG, band_refusal, decoder_selftest, robot_refusal, target_refusal
 from mp4_recovery.deploy.estimators import (ACC_DROPOUT_MG, CF_GATE_G, CF_TAU_S, DEG, FALL_FAST_GYRO, FALL_FAST_TILT_DEG,  # noqa: F401
                                             FALL_HOLD_S, FALL_TILT_DEG, FallDetector, GravityFilter, HeadingLoop,
                                             ObservationBuilder, getup_phase, imu_valid, tilt_deg)
+from mp4_recovery.deploy.feedback import position
 from mp4_recovery.deploy.mp4link import protocol as p
 from mp4_recovery.deploy.mp4link.cli import GAINS as IDENTIFIED
-from mp4_recovery.deploy.mp4link.cli import (Pacer, TempWatch, check_flags, preflight, present, read_offsets, save_log,
-                                             smoothstep)
+from mp4_recovery.deploy.mp4link.cli import PWM_SCALE, PWM_SCALE_TOL
+from mp4_recovery.deploy.mp4link.cli import (Pacer, check_flags, preflight, present, read_offsets, save_log, smoothstep)
 from mp4_recovery.policy_file import NumpyPolicy, fixture_tolerance
 
 TICKS_PER_STEP = int(round(CONTROL_DT / 0.005))
-TEMP_STOP_C = 55.0
-TEMP_START_C = 45.0
+# The gyro's bias, measured with the robot still before each run, beyond which the run is refused (rad/s, any axis). On
+# the robot, 28 still starts read at most 0.0099 rad/s on any axis; one where the robot was moved during the second read
+# 0.054 and 0.082.
+GYRO_BIAS_MAX = 0.02
 CAP_MA = 2000                  # the frame's cap: in the servos' control mode 1, duty <= min(max_pwm, kff x cap)
 HOLD_AFTER_S = 5.0             # at the stand before disarming at the end of a run
 HANDBACK_TILT_DEG, HANDBACK_GYRO, HANDBACK_RMS_DEG, HANDBACK_STEPS = 12.0, 0.8, 10.0, 25
@@ -85,7 +96,8 @@ READING_WATCH_DEG = 5.0
 READING_WATCH_DD = READING_WATCH_DEG * 10.0
 MODE_WALK, MODE_GETUP = 0, 1
 
-# The IMU's mounting, sensor -> body. data/imu_mount.json names the one measured; `imu` prints gravity in each candidate.
+# The IMU's mounting, sensor -> body. data/imu_mount.json names the one measured ({"mount": name}), or gives it as
+# {"mount": "custom", "R_sensor_to_body": 3 x 3}; `imu` prints gravity in each candidate (and the custom one).
 IMU_MOUNTS = {
     "flip_x": np.diag([1.0, -1.0, -1.0]),
     "flip_y": np.diag([-1.0, 1.0, -1.0]),
@@ -103,6 +115,7 @@ class Disarm(Exception):
     """An immediate stop: limp now."""
 
 
+OFFSET_REFUSE_DEG = 1.0                            # robot vs contract offsets: refuse to arm beyond this
 LATE_STEPS_STOP = 2                                # consecutive late policy steps that stop a run
 
 
@@ -110,9 +123,27 @@ class FallDetected(Exception):
     """A fall during the stand ramp or hold: the policy loop starts in the get-up."""
 
 
-def load_mount(name: str | None = None) -> tuple[str, np.ndarray]:
-    """A mounting by name; by default the measured one."""
-    name = name or json.loads(IMU_MOUNT_JSON.read_text())["mount"]
+def mount_rotation(m) -> np.ndarray:
+    """``m`` as a sensor -> body mounting: a 3 x 3 proper rotation (orthonormal, det +1) with entries in {-1, 0, 1}."""
+    R = np.asarray(m, dtype=float)
+    if R.shape != (3, 3) or not np.all(np.isfinite(R)):
+        raise ValueError(f"R_sensor_to_body must be 3 x 3, not {R.tolist()}")
+    if not np.all(np.isin(R, (-1.0, 0.0, 1.0))):
+        raise ValueError(f"R_sensor_to_body entries must be -1, 0 or 1: {R.tolist()}")
+    if not np.array_equal(R @ R.T, np.eye(3)) or round(float(np.linalg.det(R))) != 1:
+        raise ValueError(f"R_sensor_to_body is not a proper rotation (orthonormal, det +1): {R.tolist()}")
+    return R
+
+
+def load_mount(name: str | None = None, path: Path | None = None) -> tuple[str, np.ndarray]:
+    """A mounting by name (``custom``: the matrix in ``path``); by default the measured one, in ``path``
+    (data/imu_mount.json)."""
+    spec = json.loads((path or IMU_MOUNT_JSON).read_text()) if name in (None, "custom") else {}
+    name = name or spec["mount"]
+    if name == "custom":
+        return name, mount_rotation(spec.get("R_sensor_to_body"))
+    if name not in IMU_MOUNTS:
+        raise ValueError(f"unknown IMU mount {name!r}: one of {sorted(IMU_MOUNTS)} or custom")
     return name, IMU_MOUNTS[name]
 
 
@@ -149,6 +180,9 @@ class GetupSpec:
     timeout_s: float
     phase_s: float             # the time the phase clock takes to reach its end
     phase_restart_s: float     # the time it stays there before a retry; 0: never
+    handback_tilt_deg: float = HANDBACK_TILT_DEG
+    handback_gyro: float = HANDBACK_GYRO
+    handback_rms_deg: float = HANDBACK_RMS_DEG
 
 
 class Runner:
@@ -159,7 +193,6 @@ class Runner:
         self.stand_dd = np.asarray(contract.stand_dd, dtype=int)
         self.armed = False
         self.clear = False                                # the first arming frame also clears a latched fault
-        self.temp_watch = TempWatch(TEMP_STOP_C)
         self.last_dd = None
         self.steps: dict[str, list] = {k: [] for k in (
             "tick", "t_rx", "t_send", "seq", "obs", "raw", "rel", "dd", "tilt_deg", "late", "heading_psi", "heading_integ",
@@ -197,26 +230,32 @@ class Runner:
         if not st.flags & p.ST_IMU_OK:
             raise SystemExit("IMU absent: power-cycle the board and check ping before a policy run")
         for i in range(1, 13):
-            for name, value in {**IDENTIFIED, "ki_position": 0.0, "kp_current": 0.0}.items():
+            for name, value in {**IDENTIFIED, "ki_position": 0.0, "kp_current": 0.0, "pwm_scale": PWM_SCALE}.items():
                 self.link.set_param(i, name, value)
         for i in range(1, 13):
             for name, want in IDENTIFIED.items():
                 got = self.link.get_param(i, name)
                 if abs(got - want) > 1e-6 + 1e-3 * abs(want):
                     raise SystemExit(f"servo {i} {name} = {got:g}, not {want:g} after writing it")
+            got = self.link.get_param(i, "pwm_scale")
+            if not abs(got - PWM_SCALE) <= PWM_SCALE_TOL * PWM_SCALE:
+                raise SystemExit(f"servo {i} pwm_scale = {got:g}, not {PWM_SCALE:g} (+-{PWM_SCALE_TOL:.0%}) after writing it")
         offs, stored = read_offsets(self.link)
         self.robot_offsets = offs
-        if not all(stored) or np.any(np.abs(offs - self.c.offsets_deg) > 1e-3):
+        diff = np.abs(offs - self.c.offsets_deg)
+        if not all(stored) or np.any(diff > OFFSET_REFUSE_DEG):
+            raise SystemExit(f"the robot's calibration offsets {np.round(offs, 2).tolist()} (stored {list(map(bool, stored))}) "
+                             f"differ from the contract's {np.round(self.c.offsets_deg, 2).tolist()} by up to "
+                             f"{diff.max():.1f} deg: deploy the contract made from this calibration")
+        if np.any(diff > 1e-3):
             msg = (f"WARNING: the robot's calibration offsets {np.round(offs, 2).tolist()} differ from the contract's "
                    f"{np.round(self.c.offsets_deg, 2).tolist()}; the policy runs on the contract's stand")
             self.warnings.append(msg)
             self.out(msg)
-        temps = np.asarray(st.temp_dc, dtype=float) / 10.0
-        if temps.max() >= TEMP_START_C:
-            raise SystemExit(f"a servo is at {temps.max():.1f} degC: wait below {TEMP_START_C:.0f} degC")
 
     def measure_gyro_bias(self, seconds: float = 1.0) -> np.ndarray:
-        """The gyro's mean over ``seconds`` with the servos idle (sensor frame, rad/s)."""
+        """The gyro's mean over ``seconds`` with the servos idle (sensor frame, rad/s); refuses one over
+        ``GYRO_BIAS_MAX`` on any axis."""
         end = time.monotonic() + seconds
         st, g = None, []
         while time.monotonic() < end:
@@ -225,7 +264,11 @@ class Runner:
                 g.append(np.asarray(st.gyr_ddps, dtype=float) * 0.1 * DEG)
         if len(g) < 0.5 * seconds / 0.005:
             raise SystemExit("too few valid IMU frames to measure the gyro bias")
-        self.gyro_bias = np.mean(g, axis=0)
+        bias = np.mean(g, axis=0)
+        if np.abs(bias).max() > GYRO_BIAS_MAX:
+            raise SystemExit(f"the gyro read {np.round(bias, 4).tolist()} rad/s while the robot should be still (at most "
+                             f"{GYRO_BIAS_MAX:g} on any axis): keep the robot still for the first second and start again")
+        self.gyro_bias = bias
         return self.gyro_bias
 
     # ---- sending --------------------------------------------------------------------------------------------------
@@ -242,7 +285,7 @@ class Runner:
         return seq
 
     def watch(self) -> None:
-        """After each send: link faults, IMU, temperatures, Enter."""
+        """After each send: link faults, IMU, Enter."""
         try:
             self.link.check()
             st = self.link.latest
@@ -254,9 +297,6 @@ class Runner:
         if not imu_valid(st, p.ST_IMU_OK):
             raise StopRun("IMU frame invalid")
         self.feed_imu()
-        hot = self.temp_watch.update(st)
-        if hot is not None:
-            raise StopRun(f"servo at {hot:.1f} degC")
         if self.enter_pressed():
             raise StopRun("Enter")
 
@@ -353,14 +393,14 @@ class Runner:
         self._rw_seen = {}
 
     def reading_watch(self, s, getup_n: int) -> None:
-        """A servo reading near a track end: printed and flagged once per episode. Frames without fresh feedback from every
-        board are skipped: their positions can be a boot's zeros."""
+        """A servo reading near a track end (filtered, ``feedback.position``): printed and flagged once per episode. Frames
+        without fresh feedback from every board are skipped: their positions can be a boot's zeros."""
         if s.boards != 0x0F:
             return
         tick = int(s.tick)
         if self._rw_tick0 is None:
             self._rw_tick0 = tick
-        d = np.asarray(s.pos_dd, dtype=float)
+        d = position(s)
         near = reading_near_end(d)
         if not near.any():
             return
@@ -512,7 +552,7 @@ class Runner:
                 raise StopRun("two late steps in a row")
             next_tick = int(st.tick) + TICKS_PER_STEP
             tcf, gn = self.tilt_cf, self.gyro_norm
-            pos = self.c.rel_from_dd(np.asarray(st.pos_dd, dtype=float))
+            pos = self.c.rel_from_dd(position(st))
             if self.mode == MODE_WALK and self.fall_pending:                  # walk -> get-up
                 g_now = self.gf.g if self.gf is not None else None
                 ev = {"n": len(self.getups) + 1, "step": k, "tick": int(st.tick), "t": time.monotonic(),
@@ -542,8 +582,8 @@ class Runner:
                     self.out("WARNING: " + msg)
                     ev.update(end="no echo", end_step=k)
                     raise Disarm("get-up: no ST_GETUP echo")
-                ok = (tcf < HANDBACK_TILT_DEG and gn < HANDBACK_GYRO
-                      and math.degrees(float(np.sqrt(np.mean(pos ** 2)))) < HANDBACK_RMS_DEG)
+                ok = (tcf < getup.handback_tilt_deg and gn < getup.handback_gyro
+                      and math.degrees(float(np.sqrt(np.mean(pos ** 2)))) < getup.handback_rms_deg)
                 hb_run = hb_run + 1 if ok else 0
                 t_in = ((int(st.tick) - g_entry) & 0xFFFFFFFF) * 0.005
                 if hb_run >= HANDBACK_STEPS:                                  # get-up -> walk
@@ -639,8 +679,8 @@ def layout_refusal(pol: NumpyPolicy) -> str | None:
 
 
 def cmd_check(a) -> int:
-    """No port: the policy under this numpy against its export's fixtures, its contract, its layout, its band and bounds,
-    the decoder self-test."""
+    """No port: the policy under this numpy against its export's fixtures, its contract, the robot it was trained for,
+    its layout, its band and bounds, the decoder self-test."""
     path = Path(a.policy) / "policy.npz"
     pol = NumpyPolicy(path)
     d = np.load(path)
@@ -649,9 +689,10 @@ def cmd_check(a) -> int:
     want = pol.meta.get("contract_sha256")
     have = paths.sha256(CONTRACT_JSON)
     # a contract lists the calibrations it replaced; they differ only in the offsets and the stand
-    earlier = {c["sha256"] for c in json.loads(CONTRACT_JSON.read_text()).get("calibrations_superseded", [])}
+    earlier = {c["sha256"] for c in json.loads(CONTRACT_JSON.read_text()).get("earlier_calibrations", [])}
     same = want == have or want in earlier
     layout_why = layout_refusal(pol)
+    robot_why = robot_refusal(pol.meta)
     x = d["fixture_obs"][0]
     t0 = time.perf_counter()
     for _ in range(1000):
@@ -660,6 +701,8 @@ def cmd_check(a) -> int:
     print(f"fixtures: max |numpy - torch| {err:.2e} ({'ok' if err < tol else 'FAIL'}, limit {tol:.2e})")
     print(f"contract: {'ok' if want == have else 'ok (exported for an earlier calibration)' if same else 'DIFFERS from the policy'}"
           f" ({have[:12]})")
+    print(f"robot: {'ok' if not robot_why else 'FAIL: ' + robot_why} (servo model {pol.meta.get('actuator')}, legs "
+          f"{(pol.meta.get('legs') or {}).get('legs')})")
     print(f"inputs: {int(pol.layers[0][0].shape[1])} ({'ok' if not layout_why else 'FAIL: ' + layout_why})")
     print(f"inference: {us:.1f} us per step; numpy {np.__version__}")
     band_why = band_refusal(pol.meta)
@@ -676,12 +719,16 @@ def cmd_check(a) -> int:
                                                   filter_alpha=policy_filter_alpha(pol.meta)), c)
     print(f"decoder self-test (targets inside the bounds, {TARGET_END_DEG:g} deg from the track ends): "
           f"{'FAIL: ' + test_why if test_why else 'ok'}")
-    return 0 if err < tol and same and not layout_why and not band_why and not test_why else 1
+    return 0 if err < tol and same and not robot_why and not layout_why and not band_why and not test_why else 1
 
 
 def cmd_imu(link, a) -> int:
     """The servos stay idle. Prints the tilt and the gravity direction in each mounting candidate, to tell which one fits:
     nose down, gravity's x is positive; right side down, its y is negative."""
+    mounts = dict(IMU_MOUNTS)
+    name, R = load_mount()
+    if name == "custom":
+        mounts["custom"] = R
     link.record = []
     end = time.monotonic() + a.seconds
     st, last_print = None, 0.0
@@ -691,7 +738,7 @@ def cmd_imu(link, a) -> int:
             last_print = time.monotonic()
             acc = np.asarray(st.acc_mg, dtype=float)
             cands = "  ".join(f"{k}: g=({', '.join(f'{v:+.2f}' for v in -(R @ acc) / np.linalg.norm(acc))})"
-                              for k, R in IMU_MOUNTS.items()) if np.linalg.norm(acc) > 0 else "acc 0"
+                              for k, R in mounts.items()) if np.linalg.norm(acc) > 0 else "acc 0"
             print(f"tilt {tilt_deg(acc):5.1f}  imu {'ok' if st.flags & p.ST_IMU_OK else 'ABSENT'}  "
                   f"gyro dps {np.round(np.asarray(st.gyr_ddps) * 0.1, 1).tolist()}  {cands}", flush=True)
     if a.log:
@@ -715,7 +762,7 @@ def cmd_run(link, a) -> int:
         why = "--getup-policy has no phase clock (meta getup_phase_s)"
     else:
         for flag, pol in (("--policy", walker), ("--getup-policy", gpol)):
-            why = band_refusal(pol.meta) or layout_refusal(pol)
+            why = robot_refusal(pol.meta) or band_refusal(pol.meta) or layout_refusal(pol)
             if why:
                 why = f"{flag}: {why}"
                 break
@@ -725,7 +772,8 @@ def cmd_run(link, a) -> int:
     decoder = policy_decoder(walker, contract)
     getup = GetupSpec(act=policy_act(gpol), decoder=policy_decoder(gpol, contract), max_getups=int(a.getup_max),
                       timeout_s=float(a.getup_timeout), phase_s=float(gpol.meta["getup_phase_s"]),
-                      phase_restart_s=float(a.getup_phase_restart))
+                      phase_restart_s=float(a.getup_phase_restart), handback_tilt_deg=float(a.handback_tilt),
+                      handback_gyro=float(a.handback_gyro), handback_rms_deg=float(a.handback_rms))
     for flag, dec in (("--policy", decoder), ("--getup-policy", getup.decoder)):
         why = decoder_selftest(dec, contract)
         if why:
@@ -745,13 +793,13 @@ def cmd_run(link, a) -> int:
             "policy": str(Path(a.policy).resolve()), "policy_sha256": paths.sha256(Path(a.policy) / "policy.npz"),
             "getup_policy": str(Path(a.getup_policy).resolve()),
             "getup_policy_sha256": paths.sha256(Path(a.getup_policy) / "policy.npz"),
-            "contract_sha256": paths.sha256(CONTRACT_JSON), "mount": mount_name, "stand_dd_policy": [int(v) for v in walk_stand],
+            "contract_sha256": paths.sha256(CONTRACT_JSON), "mount": mount_name, "mount_R": mount.tolist(), "stand_dd_policy": [int(v) for v in walk_stand],
             "heading_loop": None if heading is None else heading.describe(), "getup_max": getup.max_getups,
             "getup_timeout_s": getup.timeout_s, "getup_phase_s": getup.phase_s, "getup_phase_restart_s": getup.phase_restart_s,
             "target_end_deg": TARGET_END_DEG,
             "getup_rules": {"cf_tau_s": CF_TAU_S, "cf_gate_g": list(CF_GATE_G),
                             "fall": [FALL_TILT_DEG, FALL_HOLD_S, FALL_FAST_TILT_DEG, FALL_FAST_GYRO],
-                            "handback": [HANDBACK_TILT_DEG, HANDBACK_GYRO, HANDBACK_RMS_DEG, HANDBACK_STEPS],
+                            "handback": [getup.handback_tilt_deg, getup.handback_gyro, getup.handback_rms_deg, HANDBACK_STEPS],
                             "restart_tilt_deg": PHASE_RESTART_TILT_DEG, "echo_timeout_s": ECHO_TIMEOUT_S},
             "current_watch": {"amps": WATCH_AMPS, "seconds": WATCH_S}, "reading_watch": {"deg": READING_WATCH_DEG}}
     runner.warm_up(ob, heading, walker_act, decoder, getup)
@@ -814,6 +862,8 @@ def cmd_run(link, a) -> int:
     if len(lat):
         print(f"SET_ALL -> STATE echo ms: p50 {np.percentile(lat, 50):.2f} p95 {np.percentile(lat, 95):.2f}; "
               f"missing ticks {ob.missing}; steps {len(runner.steps['tick'])}; {runner.stop_reason}")
+    if getattr(link, "feedback", None) is not None:
+        print(link.feedback.report(), flush=True)
     return 0
 
 
@@ -836,7 +886,7 @@ def main(argv=None) -> int:
     s.add_argument("--wz", type=float, default=0.0, help="rad/s, + = turn left")
     s.add_argument("--seconds", type=float, default=10.0, help="the policy loop's length, get-ups included")
     s.add_argument("--heading-loop", action=argparse.BooleanOptionalAction, default=True,
-                   help="hold the heading with the gyro while no turn is commanded (default on)")
+                   help="hold the heading with the gyro while no turn is commanded")
     s.add_argument("--stand-ramp", type=float, default=1.0, help="s of the ramp to the stand (default %(default)s)")
     s.add_argument("--hold-before", type=float, default=0.0, help="s at the stand before the policy (default %(default)s)")
     s.add_argument("--start-mode", choices=("walk", "getup"), default="walk",
@@ -847,6 +897,12 @@ def main(argv=None) -> int:
     s.add_argument("--getup-phase-restart", type=float, default=1.0, metavar="S",
                    help="the retry: restart the get-up's phase clock S s after it reached its end, if the robot is still "
                         "tilted over 45 deg; 0: never (default %(default)s)")
+    s.add_argument("--handback-tilt", type=float, default=HANDBACK_TILT_DEG, metavar="DEG",
+                   help="hand back to the walker below this filtered tilt (default %(default)s)")
+    s.add_argument("--handback-rms", type=float, default=HANDBACK_RMS_DEG, metavar="DEG",
+                   help="... and with the pose within this rms of the stand (default %(default)s)")
+    s.add_argument("--handback-gyro", type=float, default=HANDBACK_GYRO, metavar="RAD_S",
+                   help="... and below this rate (default %(default)s)")
     s.add_argument("--clear", action="store_true", help="clear a latched fault before arming")
     s.add_argument("--log", help="log base path, without suffix")
     a = ap.parse_args(argv)

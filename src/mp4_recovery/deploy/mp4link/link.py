@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 
+from ..feedback import FeedbackFilter, fresh_joints
 from . import protocol as p
 
 DEFAULT_PORT = "/dev/ttyAMA0"
@@ -19,7 +20,8 @@ class LinkError(IOError):
 
 class Link:
     """One serial port to the ESP32. A reader thread parses every frame: ``STATE`` frames update ``latest`` and the
-    ``states`` ring (and ``record`` when it is a list); responses answer :meth:`request`. ``ser`` may be any object with
+    ``states`` ring (and ``record`` when it is a list); responses answer :meth:`request`. Every STATE frame goes through
+    ``feedback`` (``deploy/feedback.py``) first: ``pos_filt`` and ``pos_reject`` set, ``pos_dd`` left raw. ``ser`` may be any object with
     ``read``, ``write`` and ``in_waiting``."""
 
     def __init__(self, port: str = DEFAULT_PORT, baud: int = DEFAULT_BAUD,
@@ -42,6 +44,7 @@ class Link:
         self.tick_gaps = 0          # STATE ticks missed between consecutive frames
         self.latency: collections.deque = collections.deque(maxlen=20000)  # SET_ALL -> STATE echo [s]
         self.error: BaseException | None = None   # what stopped the reader thread
+        self.feedback = FeedbackFilter()           # the position feedback's plausibility filter
         self.sent: list[tuple[float, int, bytes]] = []   # (time, seq, frame) when recording
         self._seq = 0
         self._sent_at: dict[int, float] = {}
@@ -78,6 +81,7 @@ class Link:
             raise LinkError("serial reader stopped: %r" % (self.error,))
 
     def _on_state(self, st: p.State) -> None:
+        st.pos_filt, st.pos_reject = self.feedback.update(st.pos_dd, st.tick, fresh_joints(st.boards))
         with self._cond:
             if self.latest is not None:
                 gap = (st.tick - self.latest.tick - 1) & 0xFFFFFFFF

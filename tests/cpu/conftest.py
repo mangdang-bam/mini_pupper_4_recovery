@@ -1,5 +1,5 @@
 import pytest
-from robot_helpers import robot  # noqa: F401
+from robot_helpers import packaged_robot, robot, fixed_calibration  # noqa: F401
 
 from mp4_recovery.deploy import runner
 

@@ -49,7 +49,8 @@ class FakeEsp32:
         self.imu_ok = True
         self.echo = True                                # False: a firmware without the get-up mode
         self.last_set_all = 0.0
-        self.params = {i: {pid: 0.0 for pid in range(len(p.PARAMS))} for i in range(1, 13)}
+        self.params = {i: {pid: 0.0 for pid in range(len(p.ALL_PARAMS))} for i in range(1, 13)}
+        self.extra_flags = 0                            # more STATE flags (ST_RANGE: the firmware's range check)
         self.nvs: dict[int, float] = {}                 # stored offsets
         self.offsets: dict[int, float] = {}             # RAM table
         self.armed_seen: list[tuple[int, list[float]]] = []   # (enable, targets) per armed tick
@@ -95,6 +96,8 @@ class FakeEsp32:
         if not ok_servo:
             return self._respond(cmd, servo, 1)
         value = struct.unpack("<f", struct.pack("<I", a1 | a2 << 16))[0]
+        if cmd in (p.CMD_GET_PARAM, p.CMD_SET_PARAM) and (a1 if cmd == p.CMD_GET_PARAM else pad) not in self.params[servo]:
+            return self._respond(cmd, servo, 2)
         if cmd == p.CMD_GET_PARAM:
             return self._respond(cmd, servo, 0, self.params[servo][a1])
         if cmd == p.CMD_SET_PARAM:
@@ -105,7 +108,7 @@ class FakeEsp32:
                 return self._respond(cmd, servo, p.STATUS_UNSET, 0.0)
             return self._respond(cmd, servo, 0, self.offsets[servo])
         if cmd == p.CMD_SET_OFFSET:
-            if not -90.0 <= value <= 90.0:
+            if not -120.0 <= value <= 120.0:
                 return self._respond(cmd, servo, 2)
             self.offsets[servo] = value
             return self._respond(cmd, servo, 0, value)
@@ -142,7 +145,7 @@ class FakeEsp32:
 
     def _state(self) -> bytes:
         self.before_tick()
-        flags = (self.latched | (p.ST_ARMED if self.armed else 0) | (p.ST_IMU_OK if self.imu_ok else 0)
+        flags = (self.latched | self.extra_flags | (p.ST_ARMED if self.armed else 0) | (p.ST_IMU_OK if self.imu_ok else 0)
                  | (p.ST_GETUP if self.getup and self.echo else 0))
         body = p.STATE.pack(p.MAGIC_STATE, 1, self.seq, self.tick, int(time.monotonic() * 1e6) & 0xFFFFFFFF,
                             flags, self.fault_servo, 0x0F,

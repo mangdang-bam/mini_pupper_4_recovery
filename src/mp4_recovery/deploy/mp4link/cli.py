@@ -4,9 +4,11 @@ Servo ids 1..12: 1-3 FR, 4-6 FL, 7-9 RR, 10-12 RL (abduction, hip, knee). Positi
 (dd, 0.1 deg, 0..3100). Every motion command disarms on exit, and the ESP32 disarms by itself 100 ms after the last frame.
 
 Commands: ``ping`` checks the link; ``config`` writes the servo gains, which every power-off of the servos loses;
-``offsets`` reads the calibration; ``dump`` reads every servo parameter; ``watch`` prints the joints while the limp legs are
-moved by hand; ``centre`` holds servos at their centre to mount the legs; ``calib`` holds the stand pose and adjusts the
-offsets, which the ESP32 stores in flash; ``stream`` plays a recorded get-up on a lifted robot; ``idle`` disarms.
+``offsets`` reads the calibration; ``dump`` reads every servo parameter; ``gains`` reads the gain registers back
+next to what ``config`` and the runner write; ``scale`` reads each servo's range_position_deg; ``watch`` prints the
+joints while the limp legs are moved by hand; ``centre`` holds servos at their centre to mount the legs; ``calib``
+holds the stand pose and adjusts the offsets, which the ESP32 stores in flash; ``stream`` plays a recorded get-up on
+a lifted robot; ``idle`` disarms.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import time
 import numpy as np
 import serial
 
+from ..feedback import position
 from . import protocol as p
 from .link import DEFAULT_BAUD, DEFAULT_PORT, Link, LinkError
 
@@ -32,16 +35,21 @@ ABDUCTION = (1, 4, 7, 10)
 # The gains the policies were trained for; the servos' flash holds softer ones.
 GAINS = {"control_mode": 1.0, "kp_position": 80.0, "kd_position": 400.0, "kff_current": 0.001,
          "max_pwm_duty_cycle": 0.99}
+# The servo firmware's PWM mode scales the duty with pwm_scale (register 12), not with kff_current: it must read this.
+# `config --pwm-scale` and the runner write it; RAM only, so every power-off of the servos loses it.
+PWM_SCALE = 0.001
+PWM_SCALE_TOL = 0.02           # the runner refuses to arm on a read-back further than this (relative) from PWM_SCALE
 MAX_STEP_DEG = 15.0            # the most a target moves per send when holding poses
 # The firmware's calibration formula, in float32: stand code = 511 + (int)(offset * 10240 / 3100), and the servo target
 # is (uint16)(3100 - code * 3100 / 1024) dd.
 CENTRE_TICK = 511
-OFFSET_MAX_DEG = 90.0          # stand codes 511 +- 297 (214..808), far from 0 and 1023
+OFFSET_MAX_DEG = 120.0         # stand codes 511 +- 396 (115..907), about 35 deg or more from the track ends (0, 1023); the firmware's limit
 ONE_TICK_DEG = 3100.0 / 10240.0
 # A joint's potentiometer has a dead zone beyond 0 and 3100 dd.
 TRACK_END_DEG = 15.0           # a joint measured this close to an end stops a stream
 STREAM_END_MARGIN_DEG = 20.0   # a stream with a target this close to an end is refused
 WATCH_NEAR_END_DEG = 5.0       # `watch` flags a reading this close to an end
+WATCH_SAVE_S = 10.0            # `watch` rewrites its log this often, so a crash loses at most this much
 # A stream plays a get-up: every frame in the firmware's get-up current mode, in the get-up policy's band and step limit.
 STREAM_ABD_BAND_DEG, STREAM_HIP_KNEE_BAND_DEG = 90.0, 180.0
 STREAM_STEP_DEG = 20.0
@@ -150,7 +158,7 @@ def mask(ids) -> int:
 
 
 def present(link: Link) -> np.ndarray:
-    """Positions from two consecutive STATE frames with fresh feedback that agree."""
+    """Positions (filtered, ``feedback.position``) from two consecutive STATE frames with fresh feedback that agree."""
     states = []
     for _ in range(20):
         st = link.wait_state(1.0)
@@ -160,7 +168,7 @@ def present(link: Link) -> np.ndarray:
                 break
     if len(states) < 2:
         raise LinkError("no fresh feedback from every board")
-    a, b = (s.pos_dd.astype(float) for s in states)
+    a, b = (position(s) for s in states)
     if np.any(a < 100) or np.any(a > 3000) or np.any(np.abs(a - b) > 20):
         raise LinkError("implausible positions (dd): %s / %s" % (a.astype(int).tolist(), b.astype(int).tolist()))
     return b
@@ -171,8 +179,12 @@ def clip_band(stand: np.ndarray, target: np.ndarray, band_deg) -> np.ndarray:
 
 
 def preflight(link: Link, clear: bool) -> None:
-    """Refuse to arm over a latched fault unless ``clear``."""
+    """Refuse to arm over a latched fault unless ``clear``, and while the firmware reports a servo range other than
+    310 deg (STATE flag RANGE: it refuses ARM itself)."""
     st = link.wait_state(1.0)
+    if st.flags & p.ST_RANGE:
+        raise LinkError("a servo reports a range_position_deg other than %.1f deg and the firmware refuses to arm; "
+                        "see `scale`" % (p.RANGE_DD / 10))
     latched = st.flags & (p.ST_FAULTS | p.ST_REJECTED)
     if latched:
         what = "%s (servo %d)" % (", ".join(n for b, n in p.FLAG_NAMES.items() if latched & b), st.fault_servo)
@@ -229,17 +241,56 @@ def check_flags(link: Link, mover: Mover | None = None) -> None:
             raise LinkError("ESP32 disarmed after our ARM (an IDLE or DISARM from another port?)")
 
 
-def save_log(link: Link, path: str, pacer: Pacer | None, meta: dict, states: list | None = None) -> None:
-    """Every STATE frame recorded (or ``states``) and every SET_ALL sent, with ``meta`` as JSON."""
+def parent_made(path) -> str:
+    """``path``, its folder created if missing."""
+    os.makedirs(os.path.dirname(os.path.abspath(str(path))), exist_ok=True)
+    return str(path)
+
+
+def save_log(link: Link, path: str, pacer: Pacer | None, meta: dict, states: list | None = None,
+             extra: dict | None = None, atomic: bool = False, quiet: bool = False) -> None:
+    """Every STATE frame recorded (or ``states``) and every SET_ALL sent, with ``meta`` as JSON; ``extra``: more arrays.
+    ``pos_dd`` is raw; ``pos_reject`` marks the readings the link's feedback filter rejected, and the meta's
+    ``feedback_filter`` holds its rule and counts.
+    ``atomic``: written to ``<path>.tmp`` and renamed over ``path``, so the file is always a whole log."""
     states = list(link.record or []) if states is None else states     # the reader thread keeps appending
+    fb = getattr(link, "feedback", None)
+    if fb is not None:
+        meta = dict(meta, feedback_filter=fb.describe())
     sent = list(link.sent)
     arr = lambda f, dt: np.array([f(s) for s in states], dtype=dt)
+    path = parent_made(path)
+    if atomic and not path.endswith(".npz"):
+        path += ".npz"                 # as numpy names it when given a path
+    out = path + ".tmp" if atomic else path
+    f = open(out, "wb") if atomic else path
+    try:
+        _savez(f, link, pacer, meta, states, sent, arr, extra)
+        if atomic:
+            f.flush()
+            os.fsync(f.fileno())       # the bytes on disk before the rename: a power cut keeps the last whole log
+    except BaseException:
+        if atomic:
+            f.close()
+            if os.path.exists(out):
+                os.remove(out)
+        raise
+    if atomic:
+        f.close()
+        os.replace(out, path)
+    if not quiet:
+        print("log: %s (%d STATE, %d SET_ALL)" % (path, len(states), len(sent)))
+
+
+def _savez(f, link, pacer, meta, states, sent, arr, extra) -> None:
     np.savez_compressed(
-        path,
+        f,
         t_rx=arr(lambda s: s.t_rx, float), tick=arr(lambda s: s.tick, np.uint32),
         t_us=arr(lambda s: s.t_us, np.uint32), seq=arr(lambda s: s.seq, np.uint16),
         flags=arr(lambda s: s.flags, np.uint16), boards=arr(lambda s: s.boards, np.uint8),
         pos_dd=np.array([s.pos_dd for s in states], dtype=np.uint16).reshape(-1, 12),
+        pos_reject=np.array([np.zeros(12, bool) if getattr(s, "pos_reject", None) is None else s.pos_reject
+                             for s in states], dtype=bool).reshape(-1, 12),
         cur_ma=np.array([s.cur_ma for s in states], dtype=np.int16).reshape(-1, 12),
         temp_dc=np.array([s.temp_dc for s in states], dtype=np.int16).reshape(-1, 12),
         acc_mg=np.array([s.acc_mg for s in states], dtype=np.int16).reshape(-1, 3),
@@ -253,8 +304,8 @@ def save_log(link: Link, path: str, pacer: Pacer | None, meta: dict, states: lis
         loop_t=np.array(pacer.stamps if pacer else [], dtype=float),
         latency=np.array(link.latency, dtype=float),
         meta=json.dumps(meta),
+        **(extra or {}),
     )
-    print("log: %s (%d STATE, %d SET_ALL)" % (path, len(states), len(sent)))
 
 
 def summary(link: Link, pacer: Pacer | None) -> None:
@@ -281,6 +332,8 @@ def summary(link: Link, pacer: Pacer | None) -> None:
         print("max |I| mA:", " ".join("%d" % v for v in cur.max(0)))
         print("max temp C:", " ".join("%.1f" % v for v in tmp.max(0)))
         print("flags seen:", ", ".join(n for b, n in p.FLAG_NAMES.items() if flags & b) or "none")
+    if getattr(link, "feedback", None) is not None:
+        print(link.feedback.report())
 
 
 def ramp_to(mover: Mover, pacer: Pacer, link: Link, frm: np.ndarray, to: np.ndarray, seconds: float) -> None:
@@ -300,7 +353,8 @@ def hold(mover: Mover, pacer: Pacer, link: Link, target: np.ndarray, seconds: fl
 
 
 def at_track_end(pos_dd):
-    """Whether a measured position (or each of an array) lies within TRACK_END_DEG of 0 or 3100 dd."""
+    """Whether a measured position (or each of an array) lies within TRACK_END_DEG of 0 or 3100 dd. Give it filtered
+    positions (``feedback.position``): a single impossible reading must not stop a stream."""
     pos = np.asarray(pos_dd, dtype=float)
     return (pos < TRACK_END_DEG * 10) | (pos > 3100 - TRACK_END_DEG * 10)
 
@@ -324,6 +378,15 @@ def _enter_pressed(fd) -> bool:
     return False
 
 
+def _lines_typed(fd) -> list[str] | None:
+    """The lines typed since the last call (a terminal hands them over at Enter), or None when nothing waits.
+    End of input reads as one empty line."""
+    if fd is None or not select.select([fd], [], [], 0)[0]:
+        return None
+    data = os.read(fd, 1024)
+    return [s.strip() for s in data.decode(errors="replace").splitlines()] or [""]
+
+
 # ---- link and servo checks ------------------------------------------------------
 def cmd_ping(link: Link, a) -> None:
     link.record = []
@@ -343,7 +406,7 @@ def cmd_ping(link: Link, a) -> None:
           % ("ok" if st.flags & p.ST_IMU_OK else "ABSENT", np.round(acc.mean(0), 3),
              np.linalg.norm(acc.mean(0)), np.round(gyr.mean(0), 2), np.round(gyr.std(0), 2)))
     boards = np.array([[s.boards >> b & 1 for b in range(4)] for s in link.record])
-    print("fresh feedback per board (CN4, CN5, CN3, CN6): %s" % np.round(boards.mean(0), 3))
+    print("fresh feedback per board (FR, FL, RR, RL): %s" % np.round(boards.mean(0), 3))
     for i in range(12):
         print("  %2d %-9s pos %4d dd (%6.1f deg)  I %5d mA  T %5.1f C"
               % (i + 1, NAMES[i], st.pos_dd[i], st.pos_dd[i] / 10, st.cur_ma[i], st.temp_dc[i] / 10))
@@ -371,21 +434,91 @@ def cmd_dump(link: Link, a) -> None:
         print("%-4d %-9s " % (i, NAMES[i - 1]) + " ".join(fmt(row[n]) for n in p.PARAMS)
               + "  %6s  %9s" % (fmt(row["temperature_c"]).strip(), fmt(row["supply_current_ma"]).strip()))
     if a.out:
-        with open(a.out, "w") as f:
+        with open(parent_made(a.out), "w") as f:
             json.dump({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "servos": out}, f, indent=1)
         print("saved", a.out)
 
 
 def cmd_config(link: Link, a) -> None:
+    writes = {**GAINS, "ki_position": 0.0, "kp_current": 0.0}
+    if a.pwm_scale is not None:
+        writes["pwm_scale"] = a.pwm_scale
     for i in range(1, 13):
         got = []
-        for name, value in {**GAINS, "ki_position": 0.0, "kp_current": 0.0}.items():
+        for name, value in writes.items():
             rb = link.set_param(i, name, value)
             if abs(rb - value) > 1e-6 + 1e-4 * abs(value):
                 raise LinkError("servo %d %s: wrote %g, read back %g" % (i, name, value, rb))
             got.append("%s=%g" % (name, rb))
         print("%2d %-9s %s" % (i, NAMES[i - 1], " ".join(got)))
     print("written to RAM (not saved; a power cycle restores each servo's flash)")
+
+
+def _read_raw(link: Link, servo: int, pid: int) -> p.Response | None:
+    """One GET_PARAM, the response whatever its status (None: no response)."""
+    try:
+        return link.request(p.CMD_GET_PARAM, servo, pid, check=False)
+    except LinkError:
+        return None
+
+
+def cmd_gains(link: Link, a) -> None:
+    """Read-only: every servo's parameter registers 0..12 (GET_PARAM only), one row per register, next to what `config`
+    and the runner write (GAINS, ki_position 0, kp_current 0, pwm_scale PWM_SCALE: the runner always, `config` with
+    --pwm-scale). ``!`` marks a register where a servo differs from that."""
+    sends = {**GAINS, "ki_position": 0.0, "kp_current": 0.0, "pwm_scale": PWM_SCALE}
+    table: dict[str, list] = {}
+    print("%-3s %-23s %10s " % ("id", "register", "writes") + " ".join("%9s" % ("s%d" % i) for i in range(1, 13)))
+    for pid, name in enumerate(p.ALL_PARAMS):
+        row = [_read_raw(link, i, pid) for i in range(1, 13)]
+        table[name] = row
+        vals = [r.val if r is not None and r.ok else None for r in row]
+        want = sends.get(name)
+        off = want is not None and any(v is None or abs(v - want) > 1e-6 + 1e-3 * abs(want) for v in vals)
+        cell = (lambda r: "%9s" % ("-" if r is None or not r.ok else "%08x" % r.raw_val)) if a.hex else \
+               (lambda r: "%9s" % ("-" if r is None or not r.ok else "%.6g" % r.val))
+        print("%-3d %-23s %10s " % (pid, name + (" !" if off else ""), "-" if want is None else "%g" % want)
+              + " ".join(cell(r) for r in row))
+    print("- = no answer. `!`: a servo differs from what config and the runner write.")
+    pwm = [r for r in table["pwm_scale"] if r is not None and r.ok]
+    if pwm:
+        print("pwm_scale answers on %d servos: a servo firmware whose PWM-mode duty scales with pwm_scale, which must read "
+              "%g (`config --pwm-scale %g`; the runner writes it before arming)." % (len(pwm), PWM_SCALE, PWM_SCALE))
+    if a.out:
+        def js(r):
+            return None if r is None else {"status": r.status, "val": r.val, "bits": "%08x" % r.raw_val}
+        with open(parent_made(a.out), "w") as f:
+            json.dump({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "writes": sends,
+                       "registers": {name: {str(i + 1): js(r) for i, r in enumerate(row)} for name, row in table.items()}},
+                      f, indent=1)
+        print("saved", a.out)
+
+
+def cmd_scale(link: Link, a) -> None:
+    """Read-only: each servo's range_position_deg (GET_PARAM id 3, which also refreshes the firmware's range check), per
+    board, against the 3100 +- 1 dd everything here assumes."""
+    bad, answered = [], 0
+    for b, leg in enumerate(LEGS):
+        cells = []
+        for i in range(3 * b + 1, 3 * b + 4):
+            r = _read_raw(link, i, p.RANGE_PARAM)
+            if r is None or not r.ok:
+                cells.append("%2d %-9s  no answer" % (i, NAMES[i - 1]))
+                continue
+            answered += 1
+            dd = r.val * 10.0
+            ok = abs(dd - p.RANGE_DD) <= p.RANGE_TOL_DD + 1e-3
+            if not ok:
+                bad.append(i)
+            cells.append("%2d %-9s %7.2f deg = %7.1f dd %s" % (i, NAMES[i - 1], r.val, dd, "ok" if ok else "MISMATCH"))
+        print("board %d %s: %s" % (b, leg, "; ".join(cells)))
+    st = link.wait_state(1.0)
+    print("firmware: %s" % ("RANGE set, ARM refused" if st.flags & p.ST_RANGE else "no RANGE flag"))
+    if bad:
+        raise LinkError("servos %s report a range other than %d +- %d dd: positions here assume %d"
+                        % (bad, p.RANGE_DD, p.RANGE_TOL_DD, p.RANGE_DD))
+    if not answered:
+        raise LinkError("no servo answered a range read")
 
 
 def cmd_idle(link: Link, a) -> None:
@@ -460,9 +593,10 @@ def cmd_stream(link: Link, a) -> None:
         for s in new:
             if s.boards != 0x0F:              # a board without fresh feedback: its positions may be a boot's zeros
                 continue
-            hit = np.flatnonzero(at_track_end(s.pos_dd))
+            q = position(s)
+            hit = np.flatnonzero(at_track_end(q))
             if len(hit):
-                end_hit = (int(hit[0]) + 1, int(s.pos_dd[hit[0]]))
+                end_hit = (int(hit[0]) + 1, int(round(q[hit[0]])))
                 return "track_end"
         return None
 
@@ -520,7 +654,10 @@ def _fmt(v, f: str) -> str:
 
 
 def cmd_watch(link: Link, a) -> None:
-    """Prints the chosen joints once a second as degrees from the stand, with their running min/max."""
+    """Prints the chosen joints once a second as degrees from the stand, with their running min/max, both from the
+    filtered positions (``feedback.position``; a rejected raw reading is shown beside them). The log is rewritten
+    every WATCH_SAVE_S and at the end, each time whole (a temporary file renamed over it). ``m`` + Enter records a marker
+    (the time and the index of the latest STATE frame, saved as ``markers``); Enter alone or ``q`` + Enter ends."""
     ids = list(range(1, 13)) if a.leg is None else [LEGS.index(a.leg) * 3 + n for n in (1, 2, 3)]
     ref = stand_from_robot(link)
     log_path = a.log or "watch_%s.npz" % time.strftime("%Y%m%d_%H%M%S")
@@ -528,52 +665,84 @@ def cmd_watch(link: Link, a) -> None:
     link.record = []
     pacer = Pacer(0.02)
     pos = [1550] * 12
+    flags = p.SA_DISARM if a.disarm else 0
     lo = np.full(12, np.inf)
     hi = np.full(12, -np.inf)
     near = WATCH_NEAR_END_DEG * 10
-    print("watch %s (servos idle) for %g s, degrees from the stand; Enter ends, Ctrl-C ends and saves"
-          % (a.leg or "all legs", a.seconds), flush=True)
+    markers: list[tuple[float, int]] = []      # (time.monotonic, index of the latest STATE frame)
+    print("watch %s (servos idle%s) for %g s, degrees from the stand; m + Enter marks, Enter or q + Enter ends, "
+          "Ctrl-C ends and saves" % (a.leg or "all legs", ", DISARM on every frame" if a.disarm else "", a.seconds),
+          flush=True)
     reason, idx = "time", 0
     t0 = time.monotonic()
-    last_print = t0
+    last_print = last_save = t0
+
+    def save(stop_reason: str, quiet: bool) -> None:
+        seen = np.isfinite(lo)
+        mn = [float((lo[i] - ref[i]) / 10) if seen[i] else None for i in range(12)]
+        mx = [float((hi[i] - ref[i]) / 10) if seen[i] else None for i in range(12)]
+        save_log(link, log_path, pacer, {"cmd": "watch", "seconds": a.seconds, "leg": a.leg, "stand": ref.tolist(),
+                                         "disarm": bool(a.disarm), "stop_reason": stop_reason,
+                                         "min_deg": mn, "max_deg": mx,
+                                         "min_dd": [float(v) if seen[i] else None for i, v in enumerate(lo)],
+                                         "max_dd": [float(v) if seen[i] else None for i, v in enumerate(hi)],
+                                         "near_end_deg": WATCH_NEAR_END_DEG,
+                                         "markers": "rows of (time.monotonic s, the clock of t_rx; index of the "
+                                                    "latest STATE frame, -1 before the first)",
+                                         "time": time.strftime("%Y-%m-%d %H:%M:%S")},
+                 extra={"markers": np.array(markers, dtype=float).reshape(-1, 2)}, atomic=True, quiet=quiet)
+
     try:
         while time.monotonic() - t0 < a.seconds:
-            link.set_all(pos, enable=0, flags=0)
+            link.set_all(pos, enable=0, flags=flags)
             pacer.wait()
             link.check()
             new = link.record[idx:]
             idx += len(new)
             if new:
-                arr = np.array([s.pos_dd for s in new], dtype=float).reshape(-1, 12)
+                arr = np.array([position(s) for s in new], dtype=float).reshape(-1, 12)
                 lo, hi = np.minimum(lo, arr.min(0)), np.maximum(hi, arr.max(0))
             if time.monotonic() - last_print >= 1.0 and link.latest is not None:
                 last_print = time.monotonic()
                 st = link.latest
                 print("t %.0f s" % (last_print - t0), flush=True)
+                qs = position(st)
+                rej = st.pos_reject if st.pos_reject is not None else np.zeros(12, bool)
                 for i in ids:
-                    q = float(st.pos_dd[i - 1])
-                    print("  %2d %-9s %+7.1f deg  min %+7.1f  max %+7.1f%s"
+                    q = float(qs[i - 1])
+                    print("  %2d %-9s %+7.1f deg  min %+7.1f  max %+7.1f%s%s"
                           % (i, NAMES[i - 1], (q - ref[i - 1]) / 10, (lo[i - 1] - ref[i - 1]) / 10,
                              (hi[i - 1] - ref[i - 1]) / 10,
-                             "  near track end (%d dd)" % q if q < near or q > 3100 - near else ""), flush=True)
-            if _enter_pressed(fd):
-                reason = "enter"
+                             "  near track end (%d dd)" % q if q < near or q > 3100 - near else "",
+                             "  (raw %d dd rejected)" % st.pos_dd[i - 1] if rej[i - 1] else ""), flush=True)
+            lines = _lines_typed(fd)
+            for line in lines or []:
+                if line.lower() == "m":
+                    markers.append((time.monotonic(), len(link.record) - 1))
+                    print("marker %d at t %.1f s (STATE frame %d)" % (len(markers), markers[-1][0] - t0, markers[-1][1]),
+                          flush=True)
+                else:
+                    reason = "enter" if line.lower() != "q" else "q"
+                    break
+            if reason != "time":
                 break
+            if time.monotonic() - last_save >= WATCH_SAVE_S:
+                save("running", quiet=True)
+                last_save = time.monotonic()
     except KeyboardInterrupt:
         reason = "ctrl-c"
     finally:
         seen = np.isfinite(lo)
-        mn = [float((lo[i] - ref[i]) / 10) if seen[i] else None for i in range(12)]
-        mx = [float((hi[i] - ref[i]) / 10) if seen[i] else None for i in range(12)]
         print("watch ended (%s); min / max deg from the stand:" % reason)
         for i in ids:
-            print("  %2d %-9s min %s  max %s" % (i, NAMES[i - 1], _fmt(mn[i - 1], "%+7.1f"), _fmt(mx[i - 1], "%+7.1f")))
-        save_log(link, log_path, pacer, {"cmd": "watch", "seconds": a.seconds, "leg": a.leg, "stand": ref.tolist(),
-                                         "stop_reason": reason, "min_deg": mn, "max_deg": mx,
-                                         "min_dd": [float(v) if seen[i] else None for i, v in enumerate(lo)],
-                                         "max_dd": [float(v) if seen[i] else None for i, v in enumerate(hi)],
-                                         "near_end_deg": WATCH_NEAR_END_DEG,
-                                         "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            mn = float((lo[i - 1] - ref[i - 1]) / 10) if seen[i - 1] else None
+            mx = float((hi[i - 1] - ref[i - 1]) / 10) if seen[i - 1] else None
+            print("  %2d %-9s min %s  max %s" % (i, NAMES[i - 1], _fmt(mn, "%+7.1f"), _fmt(mx, "%+7.1f")))
+        save(reason, quiet=False)
+        if getattr(link, "feedback", None) is not None:
+            print(link.feedback.report())
+        if markers:
+            print("%d marker%s" % (len(markers), "s" if len(markers) > 1 else ""))
 
 
 # ---- calibration --------------------------------------------------------------
@@ -585,7 +754,7 @@ def cmd_offsets(link: Link, a) -> None:
         off = ("%+6.1f deg" % offs[i]) if stored[i] else "     unset"
         print("%2d %-9s offset %s   stand code %4d   %4d dd" % (i + 1, NAMES[i], off, ticks[i], dd[i]))
     if a.json:
-        with open(a.json, "w") as f:
+        with open(parent_made(a.json), "w") as f:
             json.dump({"stand_dd": dd.tolist(), "stand_ticks": ticks.tolist(), "offsets_deg": offs.tolist(),
                        "offsets_stored": stored,
                        "source": "the robot's stored offsets, read %s; code = 511 + (int)(offset*10240/3100), "
@@ -654,6 +823,8 @@ def cmd_calib(link: Link, a) -> None:
         import tty
     require_config(link, range(1, 13))
     pose = lambda: ticks_to_dd(offset_ticks(offs)).astype(float)
+    if a.log:
+        link.record = []
     start = present(link)
     preflight(link, a.clear)
     mover = Mover(link, 0x0FFF, a.cap, a.clear)
@@ -662,7 +833,7 @@ def cmd_calib(link: Link, a) -> None:
     fd = sys.stdin.fileno() if interactive else None
     old = termios.tcgetattr(fd) if interactive else None
     try:
-        ramp_to(mover, pacer, link, start, pose(), 2.0)
+        ramp_to(mover, pacer, link, start, pose(), a.ramp_s)
         if not interactive:
             hold(mover, pacer, link, pose(), a.seconds)
         else:
@@ -709,6 +880,10 @@ def cmd_calib(link: Link, a) -> None:
         if interactive:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         link.disarm()
+        if a.log:
+            save_log(link, a.log, pacer, {"cmd": "calib", "cap": a.cap, "ramp_s": a.ramp_s, "seconds": a.seconds,
+                                          "start_offsets_deg": start_offs.tolist(), "offsets_deg": offs.tolist(),
+                                          "save": bool(save), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
     for i in range(12):
         flag = "" if offs[i] == start_offs[i] else "   (was %+.2f)" % start_offs[i]
         print("%2d %-9s offset %+6.2f deg%s" % (i + 1, NAMES[i], offs[i], flag))
@@ -741,9 +916,19 @@ def main(argv=None) -> int:
     s.add_argument("--seconds", type=float, default=60.0, help="default %(default)s")
     s.add_argument("--log", help="the .npz log (default watch_<time>.npz here)")
     s.add_argument("--leg", choices=LEGS, help="print only this leg's joints (default all)")
+    s.add_argument("--no-disarm", dest="disarm", action="store_false",
+                   help="send frames without DISARM (by default every frame carries DISARM: firmware that holds the pose "
+                        "on plain frames lets the legs go limp only then)")
     s = sub.add_parser("dump", help="read every servo parameter (read-only)")
     s.add_argument("--out", help="also write them to this JSON file")
-    sub.add_parser("config", help="write the gains to the servos' RAM and read them back")
+    s = sub.add_parser("config", help="write the gains to the servos' RAM and read them back")
+    s.add_argument("--pwm-scale", type=float, metavar="VALUE",
+                   help="also write pwm_scale (register 12; the servo firmware's PWM duty scale, %g) and read it back"
+                        % PWM_SCALE)
+    s = sub.add_parser("gains", help="read every servo's registers 0..12 next to what config writes (read-only)")
+    s.add_argument("--hex", action="store_true", help="the raw 32-bit words instead of the floats")
+    s.add_argument("--out", help="also write them to this JSON file")
+    sub.add_parser("scale", help="read each servo's range_position_deg against 3100 dd (read-only)")
     s = sub.add_parser("stream", help="play a get-up on a lifted robot, in the firmware's get-up current mode")
     s.add_argument("file", help="npz with delta_dd (N x 12, targets minus the stand) and period_s")
     s.add_argument("--cap", type=int, default=600,
@@ -765,6 +950,9 @@ def main(argv=None) -> int:
     s.add_argument("--set", action="append", metavar="ID=DEG", help="start from this offset (repeatable)")
     s.add_argument("--seconds", type=float, help="no keys: hold this long, then stop")
     s.add_argument("--save", action="store_true", help="with --seconds: save the offsets after")
+    s.add_argument("--ramp-s", type=float, default=2.0, metavar="S",
+                   help="s of the ramp from where the legs are to the stand (default %(default)s)")
+    s.add_argument("--log", help="save the STATE stream and the frames sent to this .npz (also on q or Ctrl-C)")
     s.add_argument("--clear", action="store_true", help="clear a latched fault before arming")
     sub.add_parser("idle", help="disarm: every servo idle")
 
@@ -776,7 +964,8 @@ def main(argv=None) -> int:
         return 1
     try:
         {"ping": cmd_ping, "dump": cmd_dump, "config": cmd_config, "stream": cmd_stream, "idle": cmd_idle,
-         "offsets": cmd_offsets, "centre": cmd_centre, "calib": cmd_calib, "watch": cmd_watch}[a.cmd](link, a)
+         "offsets": cmd_offsets, "centre": cmd_centre, "calib": cmd_calib, "watch": cmd_watch, "gains": cmd_gains,
+         "scale": cmd_scale}[a.cmd](link, a)
     except LinkError as exc:
         print("error:", exc, file=sys.stderr)
         return 1

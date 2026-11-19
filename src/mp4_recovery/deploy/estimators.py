@@ -7,6 +7,7 @@ import math
 import numpy as np
 
 from mp4_recovery.contract import CONTROL_DT, Contract, VelocityFilter, assemble_observation
+from mp4_recovery.deploy.feedback import position
 from mp4_recovery.heading import I_MAX, KI, KP, WZ_MAX, pi_step
 
 DEG = math.pi / 180.0
@@ -109,7 +110,8 @@ def getup_phase(t_s: float, phase_s: float) -> tuple:
 
 
 class ObservationBuilder:
-    """STATE frames -> the policy's observation, as ``contract.py`` defines it."""
+    """STATE frames -> the policy's observation, as ``contract.py`` defines it. Joint positions: the link's filtered ones
+    (``feedback.position``)."""
 
     def __init__(self, contract: Contract, mount: np.ndarray, gyro_bias_rad_s=(0.0, 0.0, 0.0)):
         self.c = contract
@@ -127,7 +129,7 @@ class ObservationBuilder:
 
     def push(self, st) -> None:
         """Every STATE frame, in order. A missing tick repeats the previous sample."""
-        rel = self.c.rel_from_dd(np.asarray(st.pos_dd, dtype=float))
+        rel = self.c.rel_from_dd(position(st))
         if self.last_tick is not None:
             gap = (int(st.tick) - self.last_tick - 1) & 0xFFFFFFFF
             if 0 < gap < 1000:
@@ -149,7 +151,7 @@ class ObservationBuilder:
     def observe(self, command, prev_action, pos_offset=None) -> np.ndarray:
         """``command``: three floats. ``pos_offset``: the policy's stand offset, subtracted from the measured positions."""
         st = self.latest
-        pos = self.c.rel_from_dd(np.asarray(st.pos_dd, dtype=float))
+        pos = self.c.rel_from_dd(position(st))
         if pos_offset is not None and np.any(pos_offset):
             pos = pos - pos_offset
         return assemble_observation(self.gyro_body(st), self.gravity_body(st), command, pos, self.vf.velocity(), prev_action)

@@ -52,18 +52,24 @@ ST_BOARD_MISSING = 1 << 6
 ST_REJECTED = 1 << 7
 ST_HOST_USB = 1 << 8
 ST_GETUP = 1 << 9         # get-up mode: current guard off
+ST_RANGE = 1 << 10        # a servo reports range_position_deg other than 310.0 deg: the firmware refuses ARM
 ST_FAULTS = ST_FAULT_CUR | ST_FAULT_TEMP | ST_FAULT_BOARD
 
 FLAG_NAMES = {ST_ARMED: "armed", ST_WATCHDOG: "watchdog", ST_FAULT_CUR: "fault-current",
               ST_FAULT_TEMP: "fault-temperature", ST_FAULT_BOARD: "fault-board",
               ST_IMU_OK: "imu", ST_BOARD_MISSING: "board-missing", ST_REJECTED: "rejected",
-              ST_HOST_USB: "usb", ST_GETUP: "getup"}
+              ST_HOST_USB: "usb", ST_GETUP: "getup", ST_RANGE: "range"}
 
 # servo parameter ids
 PARAMS = ("reverse_position_sensor", "min_position_adc", "max_position_adc",
           "range_position_deg", "reverse_motor", "kp_position", "kd_position", "kp_current",
           "kff_current", "max_pwm_duty_cycle", "ki_position", "control_mode")
-PARAM_ID = {name: i for i, name in enumerate(PARAMS)}
+# PARAMS and id 12, pwm_scale (the official firmware's table: the PWM mode's duty per PID output, servo firmware >= 0.0.9;
+# a float, RAM only). The ESP32 firmware passes id 12 on; a servo firmware without it does not answer.
+ALL_PARAMS = PARAMS + ("pwm_scale",)
+PARAM_ID = {name: i for i, name in enumerate(ALL_PARAMS)}
+RANGE_PARAM = PARAM_ID["range_position_deg"]
+RANGE_DD, RANGE_TOL_DD = 3100, 1      # what the firmware and the policies assume, and the firmware's tolerance
 LIVE_TEMPERATURE_C = 12
 LIVE_SUPPLY_CURRENT_MA = 13
 
@@ -140,6 +146,8 @@ class State:
     gyr_ddps: np.ndarray    # (3,) int16, 0.1 deg/s
     imu_t_us: int
     t_rx: float = 0.0       # host receive time (time.monotonic)
+    pos_filt: np.ndarray | None = None     # (12,) float dd, the link's plausibility filter (deploy/feedback.py)
+    pos_reject: np.ndarray | None = None   # (12,) bool, the readings that filter rejected
 
     @property
     def armed(self) -> bool:

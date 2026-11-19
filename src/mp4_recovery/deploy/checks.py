@@ -7,12 +7,46 @@ import math
 import numpy as np
 
 from mp4_recovery.contract import (BAND_DEG, POLICY_KINDS, ROBOT_BAND_MAX_DEG, ROBOT_GETUP_BAND_MAX_DEG, TRACK_DD, ActionDecoder,
-                                   Contract, calibration_refusal, contract_tendon_coefs, policy_band_deg, policy_bounds,
-                                   policy_kind, policy_stand_offset_deg)
+                                   Contract, calibration_refusal, contract_tendon_coefs, leg_set_name, policy_band_deg,
+                                   policy_bounds, policy_kind, policy_stand_offset_deg)
 
 TARGET_END_DEG = 15.0          # every target's dd at least this far from a potentiometer's track end
 BOUNDS_TOL_RAD = 1e-9
 SELFTEST_STEPS = 400
+
+
+# The robot this runner drives, as a policy's meta names what it was trained on: the servo model (``actuator``) and the
+# model's legs and feet (``legs``: ``robot.sku2.legs_meta``, its model file's sha256). tests/cpu/test_runner_checks.py
+# checks these against the model in robot/assets and the default servo model.
+ROBOT_ACTUATOR = "md300"
+ROBOT_LEGS = {"legs": "sku_2", "foot": "sphere", "foot_radius_m": 0.0055,
+              "model_sha256": "455316472c9c059c7bb9e2d5236f87c59a6d58e42071c89507fcbe8bf83f3dcf"}
+
+
+def robot_refusal(meta: dict) -> str | None:
+    """Why this robot must not run a policy trained for another, or None: the meta's servo model, leg set, foot or model
+    file (its sha256, never its path) differ from the robot's (``ROBOT_ACTUATOR``, ``ROBOT_LEGS``)."""
+    actuator = meta.get("actuator")
+    if actuator != ROBOT_ACTUATOR:
+        return f"trained on the servo model {actuator or '(not named)'}, the robot's is {ROBOT_ACTUATOR}"
+    legs = meta.get("legs")
+    if not isinstance(legs, dict):
+        return "the policy's meta names no legs: it was not trained on this robot's model"
+    try:
+        name = leg_set_name(legs.get("legs"))
+    except ValueError as exc:
+        return str(exc)
+    if name != ROBOT_LEGS["legs"]:
+        return f"trained on the legs {name}, the robot's are {ROBOT_LEGS['legs']}"
+    if legs.get("foot") != ROBOT_LEGS["foot"]:
+        return f"trained on the foot {legs.get('foot')!r}, the robot's model uses {ROBOT_LEGS['foot']!r}"
+    r = legs.get("foot_radius_m")
+    if r is None or abs(float(r) - ROBOT_LEGS["foot_radius_m"]) > 1e-9:
+        return f"trained on a {r} m foot, the robot's model uses {ROBOT_LEGS['foot_radius_m']} m"
+    if legs.get("model_sha256") != ROBOT_LEGS["model_sha256"]:
+        return (f"trained on another robot model (sha256 {str(legs.get('model_sha256'))[:12]}, the robot's "
+                f"{ROBOT_LEGS['model_sha256'][:12]})")
+    return None
 
 
 def band_refusal(meta: dict) -> str | None:
