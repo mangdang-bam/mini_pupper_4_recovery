@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mp4-recovery"
 version = "0.1.0"
-description = "Fall recovery for the Mini Pupper v4: get-up training, evaluation and deployment"
+description = "Walking and fall recovery for the Mini Pupper v4: walker and get-up training, evaluation and deployment"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
@@ -35,5 +35,5 @@ extend-exclude = ["src/mp4_recovery/actuators/bam"]
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
-# Physics notation (I for inertia, l for link).
+# Single-letter array names such as O are allowed in the tools.
 "tools/*" = ["E741"]

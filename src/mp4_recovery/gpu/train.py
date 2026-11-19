@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-"""Train the get-up policy with PPO (``getup_task``). ``scripts/recipes/getup.sh`` is the training path: a behaviour
-clone of the searched motions, then seven PPO steps of this script.
+"""Train the get-up policy with PPO (``getup_task``). ``scripts/recipes/getup_finetune.sh`` fine-tunes the get-up's
+starting checkpoint with it.
 
     python -m mp4_recovery.gpu.train --resume checkpoints/getup_start/model_6544.pt --limits --getup-phase 4 \
         --getup-band 90 180 180 --obs-norm --envs 2048 --iters 1000 --out runs/getup

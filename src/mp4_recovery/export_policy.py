@@ -9,7 +9,7 @@ The joint limits and the stance offset come from the run's options (``limits``, 
 (``limits.decoder_bounds(kind)``, with the run's ``widen_limits_deg``). ``--from-policy DIR``: no checkpoint: a copy of an
 exported policy with the limits and offset written into its meta (a stand change without retraining):
 
-    python -m mp4_recovery.export_policy --from-policy policies/walker_base policies/walker --limits --stand-offset-abd 12
+    python -m mp4_recovery.export_policy --from-policy policies/walker runs/exports/walker --limits --stand-offset-abd 12
 
 The target filter's alpha (meta ``action_filter_alpha``) is the run's option ``filter_alpha`` (the source policy's meta with
 ``--from-policy``; 0 when absent) unless ``--filter-alpha`` says otherwise. The servo model (meta ``actuator``) is the

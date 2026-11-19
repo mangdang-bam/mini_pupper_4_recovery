@@ -23,6 +23,10 @@ code and `tests/cpu`.
 `auto` (the default) picks `gpu` when `nvidia-smi` is on `PATH`, and picks
 `cpu` on macOS.
 
+On Linux without an NVIDIA GPU, `--mode gpu --skip-verify` still installs the
+`gpu` packages, for tools that simulate one robot on the CPU such as
+`tools/getup_stream.py`; the check is skipped because it needs CUDA.
+
 ## Running the installer
 
 ```bash
@@ -71,8 +75,8 @@ on the MuJoCo 3.7 line. Change a pin only together with a re-evaluation.
 | `rsl-rl-lib` | 5.0.1 | Pinned by mjlab 1.3.0; `gpu/algorithms.py` extends its PPO |
 | `torch` | 2.14.0 | Version the policies were trained with; CUDA 13.0 wheels (`--torch-backend cu130`) |
 
-The remaining pins (numpy, scipy, tensordict, tensorboard, protobuf) are the
-versions the set resolves with.
+The remaining pins (numpy, scipy, pyserial, tensordict, tensorboard, protobuf)
+are the versions the set resolves with.
 
 ## Known risks
 
@@ -84,6 +88,6 @@ versions the set resolves with.
 ## Tests
 
 ```bash
-CUDA_VISIBLE_DEVICES="" pytest tests/cpu   # no GPU, CPU requirements only
-pytest tests/gpu                           # needs the GPU requirements and at least 2 GB of GPU memory
+CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest tests/cpu   # no GPU, CPU requirements only
+.venv/bin/python -m pytest tests/gpu                           # needs the GPU requirements and at least 2 GB of GPU memory
 ```
