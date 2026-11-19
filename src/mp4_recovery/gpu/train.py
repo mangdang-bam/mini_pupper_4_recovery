@@ -5,9 +5,8 @@ clone of the searched motions, then seven PPO steps of this script.
     python -m mp4_recovery.gpu.train --resume checkpoints/getup_start/model_6544.pt --limits --getup-phase 4 \
         --getup-band 90 180 180 --obs-norm --envs 2048 --iters 1000 --out runs/getup
 
-``--init-actor`` starts from a cloned actor (``getup_bc``), ``--resume`` fine-tunes a checkpoint: actor, critic,
-optimizer and iteration come from it. Either way the critic warms up first (``--critic-warmup``, value-only updates;
-``algorithms.SmoothPPO``).
+``--resume`` fine-tunes a checkpoint: actor, critic, optimizer and iteration come from it; without it the networks start
+fresh. The critic warms up first (``--critic-warmup``, value-only updates; ``algorithms.SmoothPPO``).
 
 Network: ELU MLPs (``--actor-hidden``, ``--critic-hidden``). PPO: adaptive learning rate (KL 0.01; ``--lr0``,
 ``--lr-max``), gamma 0.99, lambda 0.95, clip 0.2, 5 epochs x 4 mini-batches, 24 steps per env per iteration.
@@ -19,8 +18,6 @@ import sys
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-
-import torch
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg, RslRlVecEnvWrapper
@@ -67,7 +64,6 @@ def parse_args(argv=None):
     ap.add_argument("--envs", type=int, default=2048)
     ap.add_argument("--out", default=str(paths.RUNS / "getup"))
     ap.add_argument("--tag", default="", help="ends the run directory's name")
-    ap.add_argument("--init-actor", help="a getup_bc model_bc.pt to start the actor from")
     ap.add_argument("--resume", help="a model_<k>.pt to fine-tune")
     # the task
     ap.add_argument("--limits", action="store_true", help="the measured joint limits, in the model and the decoder")
@@ -129,7 +125,7 @@ def parse_args(argv=None):
     ap.add_argument("--critic-hidden", type=int, nargs="+", default=[512, 256, 128])
     ap.add_argument("--obs-norm", action="store_true",
                     help="empirical observation normalisation in the actor and the critic (folded into the first "
-                         "layer at export); an --init-actor checkpoint's normaliser is loaded")
+                         "layer at export)")
     ap.add_argument("--obs-norm-freeze", type=int, default=0, metavar="N",
                     help="the actor's normaliser is not updated for this run's first N iterations")
     ap.add_argument("--init-std", type=float, default=0.1, help="the exploration std at the start")
@@ -144,8 +140,6 @@ def parse_args(argv=None):
     ap.add_argument("--caps-obs-noise", type=float, default=0.0, metavar="SIGMA",
                     help="the spatial loss's perturbation, in the actor's normalised input units")
     a = ap.parse_args(argv)
-    if a.resume and a.init_actor:
-        raise SystemExit("--resume and --init-actor exclude each other")
     if a.getup_rollover_cost < 0.0:
         raise SystemExit("--getup-rollover-cost is a cost: W >= 0")
     return a
@@ -198,17 +192,6 @@ def main():
     built = built_env.record(env, opt)
     print(built_env.line(built), flush=True)
     runner = MjlabOnPolicyRunner(RslRlVecEnvWrapper(env, clip_actions=1.0), cfg, str(log_dir), "cuda:0")
-    if a.init_actor:
-        sd = torch.load(a.init_actor, map_location="cuda:0", weights_only=False)["actor_state_dict"]
-        has_norm = any(k.startswith("obs_normalizer.") for k in sd)
-        if has_norm != a.obs_norm:
-            raise SystemExit(f"--init-actor {'has' if has_norm else 'has no'} observation normaliser: "
-                             f"{'add' if has_norm else 'drop'} --obs-norm")
-        sd = {k: v for k, v in sd.items() if k.startswith("mlp.") or k.startswith("obs_normalizer.")}
-        missing, unexpected = runner.alg.actor.load_state_dict(sd, strict=False)
-        assert not unexpected and all("std" in k for k in missing), (missing, unexpected)
-        with torch.no_grad():
-            runner.alg.actor.distribution.std_param.fill_(a.init_std)
     norm_freeze = freeze_updates(runner.alg.actor, a.obs_norm_freeze) if a.obs_norm and a.obs_norm_freeze else None
     if a.resume:
         runner.load(a.resume, map_location="cuda:0",
@@ -221,7 +204,6 @@ def main():
         "obs_norm": a.obs_norm, "obs_norm_freeze_iters": a.obs_norm_freeze if a.obs_norm else None,
         "resume": a.resume, "resume_sha256": sha256(Path(a.resume)) if a.resume else None,
         "masses_json": built["masses"], "built_env": {**built, "limits_contract": guard},
-        "init_actor": a.init_actor, "init_actor_sha256": sha256(Path(a.init_actor)) if a.init_actor else None,
         "repo_commit": commit.stdout.strip(), "repo_dirty": bool(dirty.stdout.strip()), "argv": sys.argv},
         indent=1, default=str))
     if opt.filter_alpha or opt.filter_alpha_start:

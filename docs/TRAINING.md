@@ -1,37 +1,33 @@
 # Training
 
-The get-up policy trains from searched motions with `scripts/recipes/getup.sh`. The walker isn't trained here: its weights ship with the
-repository, and `scripts/recipes/walker.sh` writes its stance into them. Training and evaluation need the `gpu` install
-([INSTALL.md](INSTALL.md)).
-
-## The get-up recipe
+Both policies are fine-tuned on this robot's simulated plant from the starting checkpoints in `checkpoints/`: the walker in four
+steps, the get-up in one. Training and evaluation need the `gpu` install ([INSTALL.md](INSTALL.md)). Run the recipes from the
+repository root; each script's header lists its settings.
 
 ```sh
-sh scripts/recipes/getup.sh [SEED]     # SEED defaults to 41
+sh scripts/recipes/walker_round1.sh      # from checkpoints/walker_start/model_6297.pt
+sh scripts/recipes/walker_round2.sh      # from the newest run of the step before, and so on to walker_round4.sh
+sh scripts/recipes/getup_finetune.sh     # from checkpoints/getup_start/model_6544.pt
 ```
 
-Run it from the repository root. Each step fine-tunes the last checkpoint of the step before it, and a finished step is skipped if the
-script runs again. Output goes to `runs/getup/s<SEED>/`, and the script's last line names the final checkpoint.
+The settings used for the shipped policies:
 
-| Step | Iterations | Last checkpoint | From | What changes |
-|---|---|---|---|---|
-| Clone | 300 epochs, 4 rounds | `clone/model_bc.pt` | searched motions | Supervised copy of the motions into one network |
-| `wide` | 1500 | 1499 | the clone | PPO, hip and knee targets allowed 60° past their track ends |
-| `limits` | 1000 | 2498 | `wide` | The real limits; action-rate and joint-velocity costs |
-| `filter` | 253 | 2750 | `limits` | Target filter ramped from α 0.5 to 0.75 over 200 iterations; learning rate at most 5e-5 |
-| `smooth1`, `smooth2` | 400, 200 | 3149, 3348 | `filter` | Filter fixed at 0.75; smoothness loss, temporal 1, spatial 20 |
-| `smooth3`, `smooth4` | 600, 600 | 3947, 4546 | `smooth2` | Smoothness loss, temporal 2, spatial 40 |
+| Recipe | Parent | Seed | Iterations |
+|---|---|---|---|
+| `walker_round1.sh` | `checkpoints/walker_start/model_6297.pt` | 71 | 1000 |
+| `walker_round2.sh` | step 1's last checkpoint | 81 | 1500 |
+| `walker_round3.sh` | step 2's last checkpoint | 91 | 1000 |
+| `walker_round4.sh` | step 3's last checkpoint | 101 | 1000 |
+| `getup_finetune.sh` | `checkpoints/getup_start/model_6544.pt` | 72 | 1000 |
 
-The result depends on the seed, so compare runs with the sequence evaluation (see [Checking a result](#checking-a-result)).
+The walker's steps 2 to 4 stay anchored to `checkpoints/walker_start/model_6297.pt`. `checkpoints/walker/model_10793.pt` and
+`checkpoints/getup/model_7543.pt` are the shipped policies' final checkpoints: `export_policy` writes `policies/walker` and
+`policies/getup` from them. A run's result depends on its seed and the machine.
 
-An iteration takes 5 to 9 s at 2048 robots on an RTX 5080, and a run takes about 3.2 GB of GPU memory. The clone takes about 35 minutes, the whole recipe about 12 hours.
+## The get-up's training options
 
-`policies/getup_sim` is this recipe's output with seed 41. It has been tested in simulation only. `policies/getup`, the policy that has run on the
-robot, was made with the recipe's kinds of steps on other seeds (31, clone 21) with slightly different step boundaries; the script doesn't
-reproduce it exactly.
-
-`checkpoints/` holds that seed-41 run's states at the end of the clone (`clone.pt`), `wide` (`wide_1499.pt`) and `smooth3` (`smooth3_3947.pt`).
-`START=<checkpoint> sh scripts/recipes/getup.sh` starts from one: `clone.pt` at `wide`, `wide_1499.pt` at `limits`, `smooth3_3947.pt` at `smooth4`.
+`python -m mp4_recovery.gpu.train` trains the get-up; the options below are its steps' settings, named as the steps of a
+training from searched motions. `getup_finetune.sh` uses the last step's.
 
 ### What every step shares
 
@@ -137,33 +133,15 @@ The searched motions aren't part of the recipe's run; it reads them.
 
 ## The walker
 
-The walker's weights come from the `flat_omni` policy of `mini_pupper_4_sim`, with further training on rough ground and stairs, not included.
-Retraining it isn't part of this work.
-
-```sh
-sh scripts/recipes/walker.sh [OUT]            # OUT defaults to runs/walker
-```
-
-This writes two things into the policy's meta and copies the weights and fixtures unchanged: the measured limits, and an abduction stand 12° further
-out. A wider stance needs no retraining, and it's what makes the walker ride out shoves. Falls from a 1.0 m/s sideways shove, in simulation
-(seed 11):
-
-| Stance offset | Standing | Walking |
-|---|---|---|
-| 8° | 58–64 % | 21–23 % |
-| 10° | 28–45 % | 9–11 % |
-| 12° | 0–11 % | 4 % |
-
-With the plain stand, 92 % fall against that 4 %. At 1.25–1.5 m/s sideways the 12° stance still falls about 45–70 % of the time, which is where the
-get-up takes over.
-
-The wider stance lowers success on box obstacles. Inside the limits, its fastest spins reach −0.26 rad/s against the plain stand's −0.32, and diagonals run about 5 % slow.
+`python -m mp4_recovery.gpu.train_walker` resumes a walker checkpoint (its run's `config.json` beside it) with PPO anchored to a
+parent policy (`gpu/anchor_ppo.py`); its docstring lists every option. The abductions' stand is 12° further out than the
+calibrated stand (`--stand-offset-abd 12`): a wider stance is what makes the walker ride out shoves.
 
 ## Checking a result
 
 ```sh
 # Export a checkpoint
-python -m mp4_recovery.export_policy runs/getup/s41/<run>/model_4546.pt runs/exports/mine
+python -m mp4_recovery.export_policy runs/getup_finetune/<run>/model_<k>.pt runs/exports/mine
 
 # Success and motion per start, against the fixed limits
 python -m mp4_recovery.eval.getup_eval --policy runs/exports/mine --seed 12 --robots 256 --seconds 8 \
@@ -182,6 +160,6 @@ MUJOCO_GL=egl python -m mp4_recovery.eval.getup_eval --policy runs/exports/mine 
 `thresholds` requires 90 % success from left, right and nose, 85 % from back, mid-fall and random, a median time to a held stand of at most 5 s,
 and limits on target reversals, velocity power, leg speed and impact from `src/mp4_recovery/data/motion_thresholds.json`. It exits 0 on a pass.
 
-`policies/getup` and `policies/getup_sim` each exceed a reversal limit slightly (back and left start respectively), so `thresholds` exits 1 on them. An export from the widened-limits step also fails `runner check`, as its targets reach past the real limits: it's only a training state.
+An export from a step with widened limits fails `runner check`, as its targets reach past the real limits: it's only a training state.
 
 The walker's own checks are `eval.push_eval`, `eval.omni_eval` and `eval.terrain_eval`; each one's docstring has its commands.

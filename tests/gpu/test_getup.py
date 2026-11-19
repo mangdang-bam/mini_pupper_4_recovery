@@ -270,16 +270,6 @@ def test_phase_observation():
     env.close()
 
 
-def test_search_sequence_unpack():
-    from mp4_recovery.gpu import getup_search as gs
-    x = torch.tensor([[2.0] * 24 + [0.1, 3.0]])                      # k = 2: postures clipped, holds clipped and capped
-    post, hold = gs.unpack(x, 2)
-    assert float(post.max()) == 1.0
-    assert torch.allclose(hold, torch.tensor([[0.3, 1.5]]))
-    post, hold = gs.unpack(torch.tensor([[0.0] * 60 + [1.5] * 5]), 5)
-    assert abs(float(hold.sum()) - gs.MAX_SEQ_S) < 1e-5
-
-
 def test_blowup_guard_resets_a_nonfinite_or_flying_world():
     env = _env(4, start_joints="stand", fixed_iter=0)
     obs, _ = env.reset()

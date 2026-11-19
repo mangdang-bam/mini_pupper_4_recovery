@@ -1,6 +1,6 @@
 """eval/motion_meter.py: the reversal count, the band power shares, the windows and the summaries on synthetic
 series (CPU), then the meter on the GPU: a scripted sinusoidal target on robots left on their backs gives the expected
-reversal rate, the impact hook reads forces and detaches, and getup_eval / getup_search carry the motion block."""
+reversal rate, the impact hook reads forces and detaches, and getup_eval carries the motion block."""
 import math
 
 import numpy as np
@@ -173,11 +173,9 @@ def test_meter_on_robots_on_their_backs():
     assert t["abd_limit_peak_Nm"]["n"] == n and t["abd_limit_peak_Nm"]["max"] >= 0.0
 
 
-def test_getup_eval_and_search_carry_the_motion_block():
-    """run_start(meter=...) puts the motion summary into the start's summary and per-trial arrays of length n;
-    getup_search.evaluate feeds a meter the same way."""
+def test_getup_eval_carries_the_motion_block():
+    """run_start(meter=...) puts the motion summary into the start's summary and per-trial arrays of length n."""
     from mp4_recovery.eval import getup_eval as ev
-    from mp4_recovery.gpu import getup_search as gs
     n = 4
     env = _env(n)
     meter = M.MotionMeter(env)
@@ -185,13 +183,8 @@ def test_getup_eval_and_search_carry_the_motion_block():
     r = ev.run_start(env, pol, "left", 1.0, 3, meter=meter)
     assert set(r["summary"]["motion"]) >= {"getup", "after", "trial", "window_steps"}
     assert len(r["trials"]["motion"]["getup.rev5"]) == n and len(r["trials"]["success"]) == n
-    x = torch.zeros(1, 5 * 13)
-    x[0, 60:] = 0.3
-    out = gs.evaluate(env, x.cuda(), 5, "left", n, 3, meter=meter, trial_s=1.0)
-    m = meter.finish(out["t_success"].reshape(-1))
     meter.detach()
     env.close()
-    assert m["summary"]["getup"]["rev5"]["n"] == n
 
 
 def test_getup_eval_feeds_the_reach_meter():

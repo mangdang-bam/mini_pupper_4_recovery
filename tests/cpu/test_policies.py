@@ -1,5 +1,5 @@
-"""The shipped policies: arrays pinned, the numpy forward pass against their fixtures, metadata free of local paths, the
-walker's meta what ``export_policy --from-policy`` writes."""
+"""The shipped policies and checkpoints: arrays pinned, the numpy forward pass against their fixtures, metadata free of
+local paths, the policies what ``export_policy`` writes from the shipped checkpoints, the recipes' command lines."""
 import hashlib
 import json
 import subprocess
@@ -16,10 +16,12 @@ from mp4_recovery.policy_file import NumpyPolicy, fixture_tolerance
 
 REPO = Path(__file__).resolve().parents[2]
 ARRAYS = {
-    "walker": "9a2568ff39eda4f8cfacb3822d2ebece1c39b009e0380efeb58a80498ba2aef1",
-    "getup": "1f1e04bd8f99fb99e6de25fd0711f21081def083af7f56f68ea33773cdcdbcf8",
-    "getup_sim": "0c15fd538e56de60d4b23c8f1e4379dad986ca014001ef4d1fce18a690146fae",
+    "walker": "e301f53fa9cd1985b7984c78b0ed37313d742ca519922b358692965d85ae5efa",
+    "getup": "c1eb8ab20780a51e9e9cc19bb54ddd0f3eb1482dbc04103968b2d0ce9a806e00",
 }
+# each policy's final checkpoint, and the checkpoints the recipes start from (iteration, an observation normaliser)
+CHECKPOINTS = {"walker/model_10793.pt": (10793, False), "getup/model_7543.pt": (7543, True),
+               "walker_start/model_6297.pt": (6297, False), "getup_start/model_6544.pt": (6544, True)}
 LOCAL = ("/home", "/tmp", "wandb", "runs/")
 
 
@@ -31,6 +33,12 @@ def arrays_sha256(path) -> str:
                 h.update(k.encode())
                 h.update(d[k].tobytes())
     return h.hexdigest()
+
+
+def same_meta(made: dict, shipped: dict) -> None:
+    for k in set(made) | set(shipped):
+        if k != "source_policy_sha256":
+            assert made.get(k) == shipped.get(k), k
 
 
 @pytest.mark.parametrize("name", ARRAYS)
@@ -46,6 +54,7 @@ def test_arrays_and_fixtures(name):
 def test_meta_and_config(name):
     meta = NumpyPolicy(REPO / "policies" / name / "policy.npz").meta
     assert meta["contract_sha256"] == paths.sha256(CONTRACT_JSON)
+    assert meta["checkpoint_sha256"] == paths.sha256(next((REPO / "checkpoints" / name).glob("model_*.pt")))
     Bounds.from_meta(meta["bounds"])
     for text in (json.dumps(meta), (REPO / "policies" / name / "config.json").read_text()):
         assert not any(s in text for s in LOCAL), text[:200]
@@ -56,104 +65,113 @@ def test_runner_check_passes(name):
     assert rn.main(["check", "--policy", str(REPO / "policies" / name)]) == 0
 
 
-def test_sim_only_policy_says_so():
-    assert NumpyPolicy(REPO / "policies/getup_sim/policy.npz").meta["tested"] == "simulation only"
-    assert "tested" not in NumpyPolicy(REPO / "policies/getup/policy.npz").meta
+def test_the_get_up_holds_the_packaged_hip_envelope():
+    from mp4_recovery import limits
+    meta = NumpyPolicy(REPO / "policies/getup/policy.npz").meta
+    assert meta["bounds"]["hip_envelope"] == limits.hip_envelope()
 
 
-def test_export_records_no_local_path_and_walker_from_policy(tmp_path):
-    out = tmp_path / "walker"
-    subprocess.run([sys.executable, "-m", "mp4_recovery.export_policy", "--from-policy", str(REPO / "policies/walker"),
-                    str(out), "--limits", "--stand-offset-abd", "12"], check=True, cwd=REPO,
-                   env={"PYTHONPATH": str(REPO / "src"), "PATH": "/usr/bin:/bin"})
-    assert arrays_sha256(out / "policy.npz") == ARRAYS["walker"]
-    made, shipped = (NumpyPolicy(p / "policy.npz").meta for p in (out, REPO / "policies/walker"))
+def test_the_get_up_stops_the_front_right_hip_at_its_limit():
+    """No thigh stop: at straight abduction the FR thigh's backward side is open (the track clamp acts), and where the
+    hip envelope caps it (a traced chassis contact) the target stops there."""
+    from mp4_recovery.contract import Contract
+    c = Contract.load()
+    st = c.stand_rel_rad
+    b = Bounds.from_meta(NumpyPolicy(REPO / "policies/getup/policy.npz").meta["bounds"])
+    e = b.hip_envelope["FR"]
+    rel = np.zeros(12)
+    rel[1] = np.radians(90.0)                          # the model's + is backward on this thigh
+    assert np.interp(st[0], e["abd"], e["hi"]) >= 10.0 - 1e-9                       # open at the stand's abduction
+    assert b.clamp_rel(rel, st)[1] == pytest.approx(b.hi[1] - st[1], abs=1e-12)     # the track clamp
+    capped = [(a, h) for a, h in zip(e["abd"], e["hi"]) if h < 10.0 and b.lo[0] <= a <= b.hi[0]]
+    assert capped                                       # some columns are capped at a traced contact
+    for a, h in capped:
+        rel[0] = a - st[0]
+        assert b.clamp_rel(rel, st)[1] == pytest.approx(min(h, b.hi[1]) - st[1], abs=1e-9), np.degrees(a)
+
+
+def export(*args):
+    subprocess.run([sys.executable, "-m", "mp4_recovery.export_policy", *map(str, args)], check=True, cwd=REPO,
+                   env={"PYTHONPATH": str(REPO / "src"), "PATH": "/usr/bin:/bin", "WANDB_MODE": "disabled"})
+
+
+@pytest.mark.parametrize("name", ARRAYS)
+def test_export_from_policy_keeps_arrays_and_meta(tmp_path, name):
+    out = tmp_path / name
+    export("--from-policy", REPO / "policies" / name, out)
+    assert arrays_sha256(out / "policy.npz") == ARRAYS[name]
+    made, shipped = (NumpyPolicy(p / "policy.npz").meta for p in (out, REPO / "policies" / name))
     assert str(tmp_path) not in json.dumps(made) and str(REPO) not in json.dumps(made)
-    for k in ("kind", "limits", "stand_offset_abd_deg", "contract_sha256", "bounds", "history", "omni"):
-        assert made[k] == shipped[k], k
-    assert (out / "config.json").read_text() == (REPO / "policies/walker/config.json").read_text()
+    same_meta(made, shipped)
+    assert (out / "config.json").read_text() == (REPO / "policies" / name / "config.json").read_text()
 
 
-def test_walker_recipe_writes_the_same_arrays(tmp_path):
-    # the recipe unsets PYTHONPATH: the installed package, or this checkout's src through the script below
-    runner = tmp_path / "python"
-    runner.write_text(f'#!/bin/sh\nPYTHONPATH={REPO / "src"} exec {sys.executable} "$@"\n')
-    runner.chmod(0o755)
-    out = tmp_path / "w"
-    subprocess.run(["sh", "scripts/recipes/walker.sh", str(out)], check=True, cwd=REPO, env={"PYTHON": str(runner),
-                                                                                             "PATH": "/usr/bin:/bin"})
-    assert arrays_sha256(out / "policy.npz") == ARRAYS["walker"]
+@pytest.mark.parametrize("name", ARRAYS)
+def test_the_final_checkpoints_export_to_the_shipped_policies(tmp_path, name):
+    out = tmp_path / name
+    export(next((REPO / "checkpoints" / name).glob("model_*.pt")), out)
+    assert arrays_sha256(out / "policy.npz") == ARRAYS[name]
+    same_meta(NumpyPolicy(out / "policy.npz").meta, NumpyPolicy(REPO / "policies" / name / "policy.npz").meta)
 
 
-def recipe_stub(tmp_path):
-    """A ``python`` that logs its arguments and leaves what training leaves: a run folder with its checkpoints."""
-    stub = tmp_path / "python"
-    stub.write_text("""#!/bin/sh
-echo "$@" >> "$OUT/calls"
-while [ $# -gt 0 ]; do
-  case $1 in --tag) tag=$2;; --out) out=$2;; --iters) iters=$2;; esac
-  shift
-done
-case $out in
-  */clone) mkdir -p "$out"; : > "$out/model_bc.pt";;
-  *) mkdir -p "$out/run_$tag"; : > "$out/run_$tag/model_950.pt"; : > "$out/run_$tag/model_$iters.pt";;
-esac
-""")
-    stub.chmod(0o755)
-    return stub
-
-
-def recipe(tmp_path, out, **env):
-    r = subprocess.run(["sh", "scripts/recipes/getup.sh"], check=True, cwd=REPO, capture_output=True, text=True,
-                       env={"PYTHON": str(recipe_stub(tmp_path)), "OUT": str(out), "PATH": "/usr/bin:/bin", **env})
-    calls = (out / "calls").read_text().splitlines() if (out / "calls").exists() else []
-    return r.stdout, calls
-
-
-STEPS = {"wide": "1500", "limits": "1000", "filter": "253", "smooth1": "400", "smooth2": "200", "smooth3": "600", "smooth4": "600"}
-
-
-def steps_of(calls):
-    out = {}
-    for c in calls:
-        a = c.split()
-        if "--tag" in a and a[a.index("--tag") + 1] != "cfg":
-            out[a[a.index("--tag") + 1]] = a[a.index("--iters") + 1]
-    return out
-
-
-def test_getup_recipe_runs_its_steps_once_each(tmp_path):
-    out = tmp_path / "s"
-    stdout, calls = recipe(tmp_path, out)
-    assert steps_of(calls) == STEPS and list(steps_of(calls)) == list(STEPS)
-    assert sum("getup_bc" in c for c in calls) == 1 and "--seed 41" in calls[0]
-    assert sum("--widen-limits-deg" in c for c in calls) == 2      # only the config for the clone, and `wide`
-    assert stdout.strip().endswith("run_smooth4/model_950.pt")
-    before = len(calls)
-    assert len(recipe(tmp_path, out)[1]) == before                 # all done: nothing runs again
-
-
-def test_getup_recipe_starts_from_a_checkpoint(tmp_path):
-    out = tmp_path / "s"
-    _, calls = recipe(tmp_path, out, START="checkpoints/wide_1499.pt")
-    want = {k: v for k, v in STEPS.items() if k != "wide"}
-    assert steps_of(calls) == want and "--resume checkpoints/wide_1499.pt" in calls[0]
-    assert not any("getup_bc" in c for c in calls)
-
-
-def test_getup_recipe_starts_from_every_shipped_checkpoint(tmp_path):
-    _, calls = recipe(tmp_path, tmp_path / "a", START="checkpoints/clone.pt")
-    assert steps_of(calls) == STEPS and "--init-actor checkpoints/clone.pt" in calls[0]
-    assert not any("getup_bc" in c for c in calls)
-    _, calls = recipe(tmp_path, tmp_path / "b", START="checkpoints/smooth3_3947.pt")
-    assert steps_of(calls) == {"smooth4": "600"} and "--resume checkpoints/smooth3_3947.pt" in calls[0]
-
-
-def test_checkpoints_load_as_plain_tensors():
+def test_checkpoints_load_as_plain_tensors_with_their_options():
     import torch
-    for name, it in (("clone.pt", None), ("wide_1499.pt", 1499), ("smooth3_3947.pt", 3947)):
+    for name, (it, norm) in CHECKPOINTS.items():
         ck = torch.load(REPO / "checkpoints" / name, map_location="cpu", weights_only=True)
-        assert "obs_normalizer._mean" in ck["actor_state_dict"]
-        assert ck.get("iter") == it
-        if it is not None:
-            assert "obs_normalizer._mean" in ck["critic_state_dict"] and ck["optimizer_state_dict"]
+        assert ck.get("iter") == it and ck["critic_state_dict"] and ck["optimizer_state_dict"]
+        assert ("obs_normalizer._mean" in ck["actor_state_dict"]) == norm
+        cfg = (REPO / "checkpoints" / name).parent / "config.json"
+        o = json.loads(cfg.read_text())["task"]["options"]
+        assert len(o["action_scale"]) == 12 and o["kind"] in ("walk", "getup")
+        assert not any(s in cfg.read_text() for s in LOCAL)
+
+
+def recipe(tmp_path, name, *args, cwd=REPO, **env):
+    """Run a recipe with a ``python`` that records its arguments; returns (exit code, the arguments as a dict, stderr)."""
+    stub = tmp_path / "python"
+    stub.write_text(f'#!/bin/sh\necho "$@" > {tmp_path / "args"}\n')
+    stub.chmod(0o755)
+    r = subprocess.run(["sh", str(REPO / "scripts/recipes" / name), *args], cwd=cwd, capture_output=True, text=True,
+                       env={"PYTHON": str(stub), "PATH": "/usr/bin:/bin", **env})
+    a = (tmp_path / "args").read_text().split() if (tmp_path / "args").exists() else []
+    opts = {}
+    for i, x in enumerate(a):
+        if x.startswith("--"):
+            opts[x] = a[i + 1] if i + 1 < len(a) and not a[i + 1].startswith("--") else True
+    return r.returncode, opts, r.stderr
+
+
+@pytest.mark.parametrize("name, seed, iters, start, anchor", [
+    ("walker_round1.sh", "71", "1000", "checkpoints/walker_start/model_6297.pt", "checkpoints/walker_start/model_6297.pt"),
+    ("getup_finetune.sh", "72", "1000", "checkpoints/getup_start/model_6544.pt", None),
+])
+def test_recipes_start_from_the_shipped_checkpoints(tmp_path, name, seed, iters, start, anchor):
+    rc, o, err = recipe(tmp_path, name)
+    assert rc == 0, err
+    assert (o["--seed"], o["--iters"], o["--resume"], o.get("--anchor")) == (seed, iters, start, anchor)
+    assert (REPO / start).is_file() and (REPO / start).with_name("config.json").is_file()
+    assert o["--actuator"] == "md300" and "--masses-json" not in o and "--legs" not in o      # the packaged robot
+
+
+def test_recipe_settings_and_overrides(tmp_path):
+    rc, o, _ = recipe(tmp_path, "walker_round1.sh", "5", "my/parent.pt", "2", ENVS="64", OUT="runs/smoke")
+    assert rc == 0 and (o["--seed"], o["--resume"], o["--anchor"], o["--iters"]) == ("5", "my/parent.pt", "my/parent.pt", "2")
+    assert (o["--envs"], o["--out"], o["--cmd-ramp"], o["--save-at"]) == ("64", "runs/smoke", "300", "300")
+    rc, o, _ = recipe(tmp_path, "getup_finetune.sh", ENVS="64")
+    assert rc == 0 and o["--envs"] == "64" and o["--std-bounds"] == "0.06" and o["--getup-attachment"] is True
+
+
+@pytest.mark.parametrize("n, seed, iters", [(2, "81", "1500"), (3, "91", "1000"), (4, "101", "1000")])
+def test_later_walker_steps_continue_from_the_step_before(tmp_path, n, seed, iters):
+    work = tmp_path / "w"
+    rc, _, err = recipe(tmp_path, f"walker_round{n}.sh", cwd=work.mkdir() or work)
+    assert rc == 2 and f"no run in runs/walker_round{n - 1}" in err
+    run = work / f"runs/walker_round{n - 1}/20270101_000000_s1_round{n - 1}"
+    run.mkdir(parents=True)
+    for k in (7050, 7297, 7100):
+        (run / f"model_{k}.pt").touch()
+    rc, o, err = recipe(tmp_path, f"walker_round{n}.sh", cwd=work)
+    assert rc == 0, err
+    assert (o["--seed"], o["--iters"], o["--tag"]) == (seed, iters, f"round{n}")
+    assert o["--resume"] == f"runs/walker_round{n - 1}/{run.name}/model_7297.pt"
+    assert o["--anchor"] == "checkpoints/walker_start/model_6297.pt" and o["--cmd-ramp"] == "0"

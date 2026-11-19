@@ -141,4 +141,4 @@ def test_getup_stream_plant_flags(tmp_path, monkeypatch):
     assert k["legs"] == {"legs": "sku_2", "foot": None, "foot_radius_m": 0.0055} and k["masses_json"] == str(f)
     assert gs.plant_flags_record(a)["masses_json"] == str(f)
     with pytest.raises(SystemExit):
-        gs.main(["s.json", "o.npz", "--legs", "sku_2"])          # plant flags are for --policy
+        gs.main(["--legs", "sku_2"])                              # --policy is required
