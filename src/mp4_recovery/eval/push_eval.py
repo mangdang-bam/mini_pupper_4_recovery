@@ -48,6 +48,7 @@ import subprocess
 import sys
 import time
 import warnings
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,6 +61,7 @@ from mp4_recovery.eval import terrain_eval as te  # noqa: E402
 from mp4_recovery.contract import ABDUCTION  # noqa: E402
 from mp4_recovery.heading import pi_step  # noqa: E402
 from mp4_recovery.gpu.mdp import servo_action  # noqa: E402
+from mp4_recovery.gpu.attachment import Attachment  # noqa: E402
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)   # all-NaN slices of ended trials
 
@@ -142,16 +144,22 @@ def make_env(args, pol, n: int, episode_s: float, render: bool = False):
     """omni_eval's flat build (its ``env_kwargs`` and cells); the video uses a side camera instead of its top view."""
     torch.manual_seed(args.seed)
     tilt = getattr(args, "tilt_limit", 1.0)
-    lim = dict(limits=getattr(args, "limits", None), stand_offset_abd=getattr(args, "stand_offset_abd", None))
+    from mp4_recovery.limits import eval_flags, legs_flags
+    lim = dict(limits=getattr(args, "limits", None), stand_offset_abd=getattr(args, "stand_offset_abd", None),
+               actuator=eval_flags(args)["actuator"], legs=legs_flags(args), masses_json=getattr(args, "masses_json", None))
     ns = SimpleNamespace(ground="flat", policy=args.policy, seed=args.seed, levels=None,
-                         tilt_limit=tilt, **lim)
+                         tilt_limit=tilt, **{k: getattr(args, k, None) for k in
+                                             ("limits", "stand_offset_abd", "actuator", "supply_v", "supply_drop_ohm",
+                                              "r_scale", "legs", "foot", "foot_radius", "masses_json",
+                                              "attachment")})
     if not render:
         env, cells = oe.build(ns, pol, n, episode_s)
         return env, cells, oe.env_kwargs(pol, n, "flat", tilt_limit=tilt, **lim) | {
             "episode_s": episode_s}
     kw = oe.env_kwargs(pol, n, "flat", render=True, tilt_limit=tilt, **lim)
     kw["episode_s"] = episode_s
-    env = te.build(te.TerrainOptions(**kw), render=True, seed=args.seed, camera=tuple(args.camera))
+    env = te.build(te.TerrainOptions(**kw), render=True, seed=args.seed, camera=tuple(args.camera),
+                   attachment=getattr(args, "attachment", None))
     return env, [(r, 0) for r in range(2)], kw
 
 
@@ -412,6 +420,11 @@ def cell_summary(cell, tr, P):
     return s
 
 
+def _legs_meta(opt):
+    from mp4_recovery.robot.sku2 import legs_meta, legs_of
+    return legs_meta(legs_of(opt))
+
+
 def setting_record(args, kw, pol, env):
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                             cwd=Path(__file__).resolve().parents[3]).stdout.strip()
@@ -422,7 +435,7 @@ def setting_record(args, kw, pol, env):
          if k not in ("noise_start", "noise_end")}
     return {"policy": str(args.policy), "policy_meta": {k: v for k, v in pol.meta.items() if k != "checkpoint"},
             "action_scale": list(pol.scale), "seed": args.seed, "repo_commit": commit, "repo_dirty": bool(dirty),
-            "argv": sys.argv, "dt": DT, "options": o, "noise": "measured",
+            "argv": sys.argv, "dt": DT, "options": o, "noise": "measured", "legs_geometry": _legs_meta(opt),
             "foot_solref": list(kw["foot_solref"]), "tilt_limit_rad": kw["tilt_limit"], "randomise": kw["randomise"],
             "ground": "flat 4 m tiles (omni_eval)",
             "heading_loop": {"law": "heading.pi_step", "wz_max": LOOP_WZ_MAX, "target": "the start heading"},
@@ -434,7 +447,9 @@ def setting_record(args, kw, pol, env):
                            "2 body contact, 3 both",
             "currents": "BAM |torque|/kt per joint (contract order); groups abd/hip/knee; x1.7 = the robot / BAM ratio measured on the rear-right abduction",
             "joint_acc": "|qacc| of the 12 joint dofs at the policy step (physics); joint_acc_pol: |Δqd|/0.02",
-            "action_rate": "||a_t - a_t-1||_2 of the raw policy output (12)", "num_envs": env.num_envs}
+            "action_rate": "||a_t - a_t-1||_2 of the raw policy output (12)", "num_envs": env.num_envs,
+            "attachment": asdict(args.attachment) if getattr(args, "attachment", None) is not None else None,
+            "built_env": getattr(env, "built_env", None)}
 
 
 def to_list(x, nd=4):
@@ -636,7 +651,7 @@ def run_video(args, pol):
             "trial": {k: to_list(v) for k, v in tm.items()}}
 
 
-def main(argv=None) -> int:
+def make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--policy", required=True)
     ap.add_argument("--seed", type=int, default=11)
@@ -661,10 +676,18 @@ def main(argv=None) -> int:
     ap.add_argument("--video-cell", default="stand:from_right:1.0", help="CMD:DIR:MAG (DIR a label or degrees)")
     ap.add_argument("--video-kick-t", type=float, default=3.0)
     ap.add_argument("--video-seconds", type=float, default=8.0)
+    ap.add_argument("--masses-json", type=te.masses_arg,
+                    help="the plant's masses file (a file name in src/mp4_recovery/data/ or a path; default the plant's)")
     ap.add_argument("--camera", type=float, nargs=3, default=[0.45, -15.0, 160.0], metavar=("DIST", "ELEV", "AZIM"))
+    ap.add_argument("--attachment", type=Attachment.parse, metavar="HEIGHT_MM,RADIUS_MM,X_M,MASS_G",
+                    help="a fixed attachment on every robot: a cylinder on the hood and its mass (as getup_eval's)")
     from mp4_recovery.limits import add_eval_args
     add_eval_args(ap)
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    args = make_parser().parse_args(argv)
     pol = te.TorchPolicy(Path(args.policy) / "policy.npz", "cuda:0")
     if args.video:
         out = run_video(args, pol)

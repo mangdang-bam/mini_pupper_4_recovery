@@ -20,6 +20,10 @@ Per cell: success = no fall and at least ``--goal`` m of forward displacement (s
 distance (median); falls; the p99 of the tilt low-passed at 0.1 s (the runner cuts the servos above 35 deg); the motor
 current (torque / kt) as the share of samples above 500 mA and the episodes that stay above ``--guard-ma`` (1500, the firmware's walking guard) for 0.5 s.
 BAM's current scale against the robot is unverified: read currents as relative.
+
+``--classic`` (instead of ``--policy``): the official firmware's Stanford trot drives the servos (``classic_gait.py``),
+commanded ``--vx`` (and the heading loop's wz); ``walk_caps`` in the result: how far its targets went beyond the walk
+mode's decoder bounds and band (``--classic-clamp`` applies them).
 """
 from __future__ import annotations
 
@@ -29,18 +33,22 @@ import math
 import os
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 import numpy as np
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
 
-from mp4_recovery.limits import add_eval_args, eval_plant
+from mp4_recovery.limits import add_eval_args, eval_flags, eval_plant
+from mp4_recovery.eval import built_env
+from mp4_recovery.eval.built_env import masses_arg
+from mp4_recovery.gpu.attachment import Attachment, install_attachment
 from mp4_recovery.gpu.env_cfg import noise_profile
 from mp4_recovery.heading import WZ_MAX, pi_step
 from mp4_recovery.gpu import terrain as terrain_mod
-from mp4_recovery.gpu.terrain_task import (FOOT_R, SINGLE_ROW, TerrainOptions, _foot_site_ids,
-                                         foot_heights_centre, make_terrain_env_cfg, sub_terrains)
+from mp4_recovery.gpu.terrain_task import (SINGLE_ROW, TerrainOptions, _foot_site_ids, foot_heights_centre, foot_r,
+                                         make_terrain_env_cfg, sub_terrains)
 
 DT = 0.02
 JOINT_ORDER = json.loads((Path(__file__).resolve().parents[1] / 'data/sku2_contract.json').read_text())['joint_order']
@@ -129,20 +137,33 @@ def bam_currents(env):
     return out if found else None
 
 
-def build(opt: TerrainOptions, render: bool = False, seed: int | None = None, camera: tuple | None = None):
+def build(opt: TerrainOptions, render: bool = False, seed: int | None = None, camera: tuple | None = None,
+          attachment=None):
     """The env, seeded before it is built: its startup events (friction, COM, mass, actuator draws) run inside the
-    constructor, so a seed set afterwards changes only the resets and the noise, not the plants."""
+    constructor, so a seed set afterwards changes only the resets and the noise, not the plants. ``attachment``
+    (``gpu.attachment.Attachment``): on every robot, installed last (after the plant's draws). The built env's record
+    (``eval.built_env.record``: total mass, legs, servo model, attachment, contract and limits hashes) is printed and kept
+    in ``env.built_env`` for the caller's result file."""
     cfg = make_terrain_env_cfg(opt)
+    if attachment is not None:
+        install_attachment(cfg, attachment)
     cfg.seed = seed
     if render:
         cfg.viewer.width, cfg.viewer.height = 960, 540
         cfg.viewer.distance, cfg.viewer.elevation, cfg.viewer.azimuth = camera or (0.55, -18.0, 135.0)
-    return ManagerBasedRlEnv(cfg=cfg, device="cuda:0", render_mode="rgb_array" if render else None)
+    env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0", render_mode="rgb_array" if render else None)
+    env.built_env = built_env.record(env, opt, attachment)
+    print(built_env.line(env.built_env), flush=True)
+    return env
 
 
 @torch.no_grad()
 def evaluate(args) -> dict:
-    pol = TorchPolicy(Path(args.policy) / "policy.npz", "cuda:0") if args.policy else None
+    if getattr(args, "classic", False):
+        from mp4_recovery.classic_gait import ClassicPolicy
+        pol = ClassicPolicy("cuda:0")
+    else:
+        pol = TorchPolicy(Path(args.policy) / "policy.npz", "cuda:0")
     omni = bool(pol.meta.get("omni"))
     scale = pol.scale
     opt = TerrainOptions(num_envs=args.envs, terrain=args.terrain, rows=args.rows,
@@ -155,14 +176,21 @@ def evaluate(args) -> dict:
                          **({"stair_layout": load_layout(args.layout), "stair_width": args.width,
                              "stair_landing": args.landing} if args.terrain == "stairs_built" else {}),
                          tilt_limit=args.tilt_limit,
-                         **eval_plant(pol.meta, getattr(args, "limits", None),
-                                      getattr(args, "stand_offset_abd", None)))
+                         **({"masses_json": args.masses_json} if getattr(args, "masses_json", None) else {}),
+                         **eval_plant(pol.meta, **eval_flags(args)))
+    foot_z0 = foot_r(opt)           # a foot site's height at a foot contact
     names = list(sub_terrains(opt))
     stairs = args.terrain == "stairs_built"
     rows = [0] if args.terrain in SINGLE_ROW else (args.levels or list(range(args.rows)))
     cols = [names.index(c) for c in args.only] if args.only else list(range(len(names)))
     cells = [(r, c) for c in cols for r in rows]
-    env = build(opt, render=bool(args.video), seed=args.seed)
+    attachment = getattr(args, "attachment", None)
+    env = build(opt, render=bool(args.video), seed=args.seed, attachment=attachment)
+    built = env.built_env
+    driver = None
+    if getattr(args, "classic", False):
+        from mp4_recovery.classic_gait import ClassicDriver
+        driver = ClassicDriver(env, clamp=args.classic_clamp, height_mm=args.classic_height)
     torch.manual_seed(args.seed)
     obs, _ = env.reset()
     rr, cc = assign_cells(env, cells)
@@ -258,7 +286,7 @@ def evaluate(args) -> dict:
             over = fp[:, :, 0] > x_first.unsqueeze(-1) - 0.01
             fy = torch.where(over, fp[:, :, 1].abs(), torch.zeros_like(fp[:, :, 1])).max(-1).values
             foot_env = torch.where(live, torch.maximum(foot_env, fy), foot_env)
-            stance = (fp[:, :, 0] > x_first.unsqueeze(-1) + 0.01) & (foot_heights_centre(env) <= FOOT_R + 0.002)
+            stance = (fp[:, :, 0] > x_first.unsqueeze(-1) + 0.01) & (foot_heights_centre(env) <= foot_z0 + 0.002)
             fs = torch.where(stance, fp[:, :, 1].abs(), torch.zeros_like(fp[:, :, 1])).max(-1).values
             foot_env_st = torch.where(live, torch.maximum(foot_env_st, fs), foot_env_st)
             lc = (env.scene["leg_contact"].data.found > 0).flatten(1).any(-1)
@@ -267,7 +295,7 @@ def evaluate(args) -> dict:
             sat += live.float().unsqueeze(-1) * (a.abs() >= 0.98).float().view(n, 4, 3).any(1).float()
             on_landing = live & (fx > landing_x + STAIR_FOOT_PAST)
             t_goal = torch.where(on_landing & torch.isnan(t_goal), torch.full_like(t_goal, (k + 1) * DT), t_goal)
-        pen = (FOOT_R - foot_heights_centre(env)).clamp(min=0.0)         # how far each foot is pressed in
+        pen = (foot_z0 - foot_heights_centre(env)).clamp(min=0.0)         # how far each foot is pressed in
         pens.append(torch.where((alive & ~ended).unsqueeze(-1), pen, torch.full_like(pen, float("nan"))))
         cur = bam_currents(env)
         if cur is not None:
@@ -345,15 +373,17 @@ def evaluate(args) -> dict:
                 row["cur_max_p99_A"] = float(np.nanpercentile(cmax[:, m], 99))
         table.append(row)
     import subprocess
+    from mp4_recovery.robot.sku2 import legs_meta, legs_of
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                             cwd=Path(__file__).resolve().parents[3]).stdout.strip()
     res = {"options": {k: (list(v) if isinstance(v, tuple) else v) for k, v in opt.__dict__.items()
                        if k not in ("noise_start", "noise_end")}, "repo_commit": commit, "argv": sys.argv,
-           "policy": args.policy, "foot_solref": opt.foot_solref, "masses_json": opt.masses_json, "action_scale": list(opt.action_scale), "omni": omni, "heading_loop": bool(omni and args.heading_loop),
+           "policy": args.policy, "foot_solref": opt.foot_solref, "masses_json": opt.masses_json, "legs_geometry": legs_meta(legs_of(opt)), "action_scale": list(opt.action_scale), "omni": omni, "heading_loop": bool(omni and args.heading_loop),
            "heading": ({"law": "heading.pi_step on the true yaw", "wz_max": wz_lim}
                        if omni and args.heading_loop else None),
            "start_noise": args.start_noise, "width": args.width, "landing": args.landing,
            "vx": args.vx, "seconds": args.seconds, "goal_m": args.goal, "stop_at_goal": bool(args.stop_at_goal), "noise": "measured",
+           "attachment": asdict(attachment) if attachment is not None else None, "built_env": built,
            "seed": args.seed, "terrain_seed": args.terrain_seed, "envs": n, "guard_ma": args.guard_ma, "wall_s": wall, "cells": table,
            # per trial, in env order (the same seeds give the same plants and tiles: pair policies trial by trial)
            "trials": {"level": rr.astype(int).tolist(), "terrain": [names[int(c)] for c in cc],
@@ -371,6 +401,10 @@ def evaluate(args) -> dict:
                       "dist_m": np.round(dist, 4).tolist(),
                       "lat_m": np.round(lat, 4).tolist(), "lat_max_m": np.round(lat_max, 4).tolist(),
                       "t_goal_s": [None if np.isnan(x) else round(float(x), 2) for x in t_goal]}}
+    if driver is not None:
+        from mp4_recovery.classic_gait import describe
+        res["classic"] = describe(args.classic_clamp, args.classic_height)
+        res["walk_caps"] = driver.stats(np.arange(n))
     if args.video:
         import imageio.v2 as imageio
         Path(args.video).parent.mkdir(parents=True, exist_ok=True)
@@ -380,9 +414,15 @@ def evaluate(args) -> dict:
     return res
 
 
-def main() -> int:
+def make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--policy", required=True, help="a policy directory with policy.npz")
+    ap.add_argument("--policy", help="a policy directory with policy.npz")
+    ap.add_argument("--classic", action="store_true",
+                    help="instead of --policy: the official firmware's Stanford trot (classic_gait.py)")
+    ap.add_argument("--classic-clamp", action="store_true",
+                    help="--classic: clamp its targets into the walk mode's band and decoder bounds (default: not)")
+    ap.add_argument("--classic-height", type=float, default=70.0,
+                    help="--classic: the walk's body height (mm; default the firmware's 70)")
     ap.add_argument("--terrain", default="rough",
                     choices=("rough", "flat", "square_walls", "stairs_built"),
                     help="stairs_built: a measured staircase (--layout); success = all four feet on the landing without "
@@ -416,8 +456,20 @@ def main() -> int:
                          "sideways drift do not count")
     ap.add_argument("--json")
     ap.add_argument("--video")
+    ap.add_argument("--masses-json", type=masses_arg, metavar="PATH",
+                    help="the plant's masses file (a path, or a file name in src/mp4_recovery/data/; default the task's, "
+                         f"{TerrainOptions.masses_json})")
+    ap.add_argument("--attachment", type=Attachment.parse, metavar="HEIGHT_MM,RADIUS_MM,X_M,MASS_G",
+                    help="a fixed attachment on every robot: a cylinder on the hood and its mass (as getup_eval's)")
     add_eval_args(ap)
+    return ap
+
+
+def main() -> int:
+    ap = make_parser()
     args = ap.parse_args()
+    if bool(args.policy) == bool(args.classic):
+        ap.error("one of --policy or --classic")
     res = evaluate(args)
     for row in res["cells"]:
         extra = (f" cur>500mA {100 * row['cur_over_500mA']:4.1f}% trip{args.guard_ma} {100 * row['guard_trip']:3.0f}%"

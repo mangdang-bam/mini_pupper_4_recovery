@@ -25,8 +25,9 @@ get-up observation = the walker env's newest frame of each term with the command
 ``getup_phase_s``: ``runner.getup_phase`` of the time since this GETUP's entry), the velocity 0 at the switch and
 the previous action the seeded decoder's; the get-up policy's own history if it has one); in GETUP the hand-back
 criterion (filtered tilt < 12 deg, |gyro| < 0.8 rad/s, the measured pose within 10 deg rms of the stand, held 25
-steps) hands back (the walker's decoder seeded, its observation history refilled with the hand-back frame as the
-runner's cleared history, the heading loop re-latched); ``--getup-timeout`` s in GETUP ends the trial (the runner
+steps; ``--handback-tilt``, ``--handback-gyro`` and ``--handback-rms`` change the three, as the runner's) hands back
+(the walker's decoder seeded, its observation history refilled with the hand-back frame as the runner's cleared history,
+the heading loop re-latched); ``--getup-timeout`` s in GETUP (default the runner's 20) ends the trial (the runner
 disarms: limp); a fall after ``--getup-max`` get-ups ends it (disarm). An ended robot is frozen out of the metrics
 (it keeps stepping on the get-up policy).
 
@@ -46,6 +47,14 @@ one step later than the runner's double).
 ``--force-getup-t S`` enters GETUP at S s on every walking robot (a plumbing check of the switch and the hand-back
 without a fall; no kick unless ``--kick`` is given). At most 256 robots; it checks ``nvidia-smi`` for 1 GB free
 (``--min-free-mb``).
+
+``--terrain FAMILY --levels 3,6`` (``terrain.family_columns``): the robots start on six columns of that family, 1.6 m
+tiles, shared evenly among the levels and columns. ``--handback-tilt``, ``--handback-rms``, ``--handback-gyro`` replace the
+hand-back's limits (a flight slopes 26.6 deg, past the runner's 12).
+
+``--legs`` (``--foot sphere|mesh``, ``--foot-radius M``; ``limits.add_eval_args``): the robot's legs and feet
+(``robot.sku2.Legs``; default: the walker's meta, else the defaults); the result's ``plant.legs`` records them and their
+stand, and ``wall`` the build's and the run's seconds.
 
 ``--schedule LO HI A B`` (``--kick`` is then ignored): repeated
 kicks on every robot that has not ended, in every mode (walking, recovering, GETUP): |dv| ~ U(LO, HI) m/s added to the
@@ -77,7 +86,17 @@ Per kick (``kick_accounting``; steps are the 50 Hz policy steps, a kick at step 
 Per robot: down intervals (a GETUP entry -> walking again; the entries before one walking-again merged), the longest
 (``longest_down_s``; an interval still open at the end counts with its length so far, ``longest_down_open``; an ended
 robot is down for good). Summaries per magnitude bin (0.25 m/s from LO), per direction sector (8, centred on
-push_eval's labels), per command and overall; BAM currents per servo by mode at x1 and x1.7 (time above 0.8 A, peak)."""
+push_eval's labels), per command and overall; BAM currents per servo by mode at x1 and x1.7 (time above 0.8 A, peak).
+The summary's ``never_up``: robots that ended limp, or were still down at the end after over 15 s; ``slow_up``: the
+others down over 15 s, who rose (together ``robots_down_over_15s``).
+
+``route`` (both modes): the first attempt of each fall, from its GETUP entry to its first restart, its hand-back or its
+robot's end, leaving out falls in the last 3 s: the shares over 120 and 170 deg of true tilt, up within the attempt and
+over 170 deg within 1 s, the median times (all, direct: at most 120 deg; via the back: over 170 deg), overall and by the
+flank lower at the entry (filtered gravity y below -0.1: right; above 0.1: left).
+
+``--reach``: each leg's commanded and measured hip towards the body's middle in GETUP, against the robot's proven reach
+(``eval/reach.py``): the JSON's ``reach`` and what's beyond it printed."""
 
 from __future__ import annotations
 
@@ -87,6 +106,8 @@ import math
 import os
 import subprocess
 import sys
+import time
+from dataclasses import asdict
 from pathlib import Path
 
 os.environ.setdefault("MUJOCO_GL", "egl")
@@ -106,8 +127,14 @@ MAX_ROBOTS = 256
 SCHED_BIN = 0.25                  # m/s: the magnitude bins of the summaries
 SECTORS = 8
 SCHED_TILE_M = 16.0
+TERRAIN_COLUMNS = 6               # --terrain: columns of the family, so a result is not one tile's
+TERRAIN_NCONMAX, TERRAIN_NJMAX = 256, 1000
 HIGH_A, ROBOT_RATIO = 0.8, 1.7     # getup_eval's current threshold and robot/BAM ratio
 NO_MAX = 10 ** 6                  # --getup-max in schedule mode: unlimited
+DOWN_LONG_S = 15.0
+ROUTE_MIN_STEPS = 150              # a fall this near the run's end is left out of the route
+ROUTE_DIRECT_DEG, ROUTE_BACK_DEG = 120.0, 170.0
+ROUTE_SIDE_G = 0.1
 
 
 # ---------------------------------------------------------------------------------------------- the IMU, vectorised
@@ -282,24 +309,42 @@ def gpu_free_mb() -> int | None:
         return None
 
 
+def seq_levels(args) -> list[int]:
+    return [int(v) for v in args.levels.split(",")]
+
+
 def build(args, wpol, gdir: Path):
     from mp4_recovery.eval import omni_eval as oe
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.managers.termination_manager import TerminationTermCfg
     from mjlab.tasks.velocity import mdp as vel_mdp
+    from mp4_recovery.gpu.attachment import install_attachment
     from mp4_recovery.gpu.getup_task import CONTACT_SOLREF, THIGH_SHORT_M, _spec_fn
+    from mp4_recovery.gpu.terrain import LEVELS, TILE_SIZE
     from mp4_recovery.gpu.terrain_task import TerrainOptions, make_terrain_env_cfg
+    from mp4_recovery.limits import eval_flags, legs_flags
+    from mp4_recovery.robot.sku2 import legs_meta, legs_of
 
     kw = oe.env_kwargs(wpol, args.robots, "flat", limits=getattr(args, "limits", None),
-                       stand_offset_abd=getattr(args, "stand_offset_abd", None))
+                       stand_offset_abd=getattr(args, "stand_offset_abd", None), actuator=eval_flags(args)["actuator"],
+                       legs=legs_flags(args))
     kw["episode_s"] = args.seconds + 5.0
-    if getattr(args, "schedule", None):
+    if getattr(args, "masses_json", None):
+        kw["masses_json"] = args.masses_json
+    family = getattr(args, "terrain", None)
+    if family:
+        rows = max(seq_levels(args)) + 1
+        kw.update(terrain="families", families=(family,) * TERRAIN_COLUMNS, rows=rows, difficulty_max=rows / LEVELS,
+                  tile=TILE_SIZE, terrain_seed=1)
+    elif getattr(args, "schedule", None):
         kw["tile"] = SCHED_TILE_M
     opt = TerrainOptions(**kw)
     cfg = make_terrain_env_cfg(opt)
     cfg.seed = args.seed
     cfg.terminations = {"time_out": TerminationTermCfg(func=vel_mdp.time_out, time_out=True)}
-    plant = {"plant": args.plant}
+    plant = {"plant": args.plant, "masses_json": kw.get("masses_json", "default"), "actuator": kw["actuator"],
+             "supply_v_range": kw["supply_v_range"], "supply_drop_ohm_range": kw["supply_drop_ohm_range"],
+             "r_scale_range": kw["r_scale_range"], "legs": legs_meta(legs_of(opt))}
     if args.plant == "getup":
         o = {}
         cj = gdir / "config.json"
@@ -310,11 +355,17 @@ def build(args, wpol, gdir: Path):
         solref = o.get("contact_solref", CONTACT_SOLREF) if cj.is_file() else CONTACT_SOLREF
         robot = cfg.scene.entities["robot"]
         robot.spec_fn = _spec_fn(robot.spec_fn, coll, tb, short, None if solref is None else tuple(solref))
-        cfg.sim.njmax = int(o.get("njmax", 1000))
-        cfg.sim.nconmax = int(o.get("nconmax", 128))
+        cfg.sim.njmax = TERRAIN_NJMAX if family else int(o.get("njmax", 1000))
+        cfg.sim.nconmax = TERRAIN_NCONMAX if family else int(o.get("nconmax", 128))
         plant.update(getup_collisions=coll, thigh_base=tb, thigh_short_m=short,
                      contact_solref=None if solref is None else list(solref), njmax=cfg.sim.njmax,
                      nconmax=cfg.sim.nconmax, from_config=cj.is_file())
+    elif family:
+        cfg.sim.nconmax, cfg.sim.njmax = TERRAIN_NCONMAX, TERRAIN_NJMAX
+    attachment = getattr(args, "attachment", None)
+    if attachment is not None:
+        install_attachment(cfg, attachment)
+        plant["attachment"] = asdict(attachment)
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
     return env, kw, plant
 
@@ -336,7 +387,7 @@ class ModeBounds:
 def run_sequence(env, wpol, gpol, args, step_hook=None) -> dict:
     """The simulation (module docstring). ``step_hook(k, env, mode, entry_k, live)``, if given, is called at every step
     just before ``env.step`` (the state the step's actions act on, after its kicks): ``mode`` (n,) 0 walk / 1 GETUP,
-    ``entry_k`` the step of each robot's latest GETUP entry, ``live`` not ended (tools/record_fall_states.py)."""
+    ``entry_k`` the step of each robot's latest GETUP entry, ``live`` not ended; for a caller that records states."""
     from mp4_recovery.eval import omni_eval as oe
     from mp4_recovery.eval import push_eval as pe
     from mp4_recovery.eval import terrain_eval as te
@@ -359,7 +410,10 @@ def run_sequence(env, wpol, gpol, args, step_hook=None) -> dict:
     cmd = oe.pin_commands(env, C)
     torch.manual_seed(args.seed)
     env.reset()
-    te.assign_cells(env, [(r, 0) for r in range(2)])          # omni_eval's flat cells (4 m tiles)
+    if getattr(args, "terrain", None):
+        te.assign_cells(env, [(r, c) for r in seq_levels(args) for c in range(TERRAIN_COLUMNS)])
+    else:
+        te.assign_cells(env, [(r, 0) for r in range(2)])      # omni_eval's flat cells (4 m tiles)
     obs, _ = env.reset()
     yaw0 = oe.start_noise(env, args.seed)
     target = yaw0.clone()
@@ -486,7 +540,9 @@ def run_sequence(env, wpol, gpol, args, step_hook=None) -> dict:
                         "gravity": [round(v, 5) for v in gg]}
                        for i, r_, gg in zip(ids_in.tolist(), roll.tolist(), g.tolist())]
         rms = torch.rad2deg(servo.pos_rel.pow(2).mean(-1).sqrt())
-        ok = (tilt_cf < rn.HANDBACK_TILT_DEG) & (gyro_n < rn.HANDBACK_GYRO) & (rms < rn.HANDBACK_RMS_DEG)
+        ok = (tilt_cf < getattr(args, "handback_tilt", rn.HANDBACK_TILT_DEG)) \
+            & (gyro_n < getattr(args, "handback_gyro", rn.HANDBACK_GYRO)) \
+            & (rms < getattr(args, "handback_rms", rn.HANDBACK_RMS_DEG))
         in_g = live & (mode == 1) & ~enter
         hb_run = torch.where(in_g & ok, hb_run + 1, torch.zeros_like(hb_run))
         hb = in_g & (hb_run >= rn.HANDBACK_STEPS)
@@ -726,7 +782,7 @@ def kick_accounting(mode, ok, kicks: dict, entries, end_k, end_code, T: int, hol
                 rec["walk_k"][j] = w
                 rec["t_walk_s"][j] = round((w - K) * DT, 3)
     robots = {f: [] for f in ("kicks", "kicks_walk", "toppled", "getups", "unattributed_falls", "longest_down_s",
-                              "longest_down_open", "down_intervals", "end")}
+                              "longest_down_open", "longest_closed_down_s", "open_down_s", "down_intervals", "end")}
     for e in range(n):
         groups = {}
         for E in ent[e]:
@@ -745,9 +801,58 @@ def kick_accounting(mode, ok, kicks: dict, entries, end_k, end_code, T: int, hol
         robots["unattributed_falls"].append(sum(1 for (x, _) in unattributed if x == e))
         robots["longest_down_s"].append(round(float(longest[0]), 3))
         robots["longest_down_open"].append(bool(longest[1]))
+        robots["longest_closed_down_s"].append(round(float(max((t for t, o in ivs if not o), default=0.0)), 3))
+        robots["open_down_s"].append(round(float(max((t for t, o in ivs if o), default=0.0)), 3))
         robots["down_intervals"].append(len(ivs))
         robots["end"].append(["", "timeout", "max_getups"][int(end_code[e])])
     return {"kicks": rec, "robots": robots, "unattributed": [[int(e), int(E)] for e, E in unattributed]}
+
+
+def down_counts(robots: dict) -> dict:
+    """``never_up`` and ``slow_up`` (the module's docstring) from ``kick_accounting``'s per-robot records."""
+    ended = np.array([x != "" for x in robots["end"]])
+    never = ended | (np.array(robots["open_down_s"]) > DOWN_LONG_S)
+    slow = ~never & (np.array(robots["longest_closed_down_s"]) > DOWN_LONG_S)
+    return {"never_up": int(never.sum()), "slow_up": int(slow.sum())}
+
+
+def route_rows(events: list, tilt: np.ndarray, end_k=None) -> np.ndarray:
+    """Per fall's first attempt: (gravity y at the entry, max tilt, seconds, up in the attempt, max tilt in its first
+    second). ``tilt`` (T, n); ``end_k`` (n,): the step a robot ended, -1 never."""
+    T = tilt.shape[0]
+    by_robot: dict = {}
+    for e in events:
+        by_robot.setdefault(e["robot"], []).append(e)
+    rows = []
+    for e in events:
+        if e["event"] != "getup" or e["k"] + ROUTE_MIN_STEPS >= T:
+            continue
+        r, k = e["robot"], e["k"]
+        later = [x for x in by_robot[r] if x["k"] > k]
+        restart = min((x["k"] for x in later if x["event"] == "phase-restart"), default=None)
+        back = min((x["k"] for x in later if x["event"] == "hand-back"), default=None)
+        ended = None if end_k is None or end_k[r] < 0 else int(end_k[r])
+        end = min(x for x in (restart, back, ended, T - 1) if x is not None)
+        rows.append((e["gravity"][1], tilt[k:max(end, k + 1), r].max(), (end - k) * DT,
+                     back is not None and back == end, tilt[k:k + int(round(1.0 / DT)), r].max()))
+    return np.array(rows, dtype=float).reshape(-1, 5)
+
+
+def route_summary(events: list, tilt: np.ndarray, end_k=None) -> dict:
+    """The ``route`` section (the module's docstring)."""
+    rows = route_rows(events, tilt, end_k)
+
+    def group(mask) -> dict:
+        q = rows[mask]
+        med = lambda x: round(float(np.median(x)), 3) if len(x) else None  # noqa: E731
+        return {"n": len(q), "over_120": float((q[:, 1] > ROUTE_DIRECT_DEG).mean()) if len(q) else None,
+                "over_170": float((q[:, 1] > ROUTE_BACK_DEG).mean()) if len(q) else None,
+                "over_170_in_1s": float((q[:, 4] > ROUTE_BACK_DEG).mean()) if len(q) else None,
+                "up_in_attempt": float(q[:, 3].mean()) if len(q) else None, "t_p50_s": med(q[:, 2]),
+                "t_direct_p50_s": med(q[q[:, 1] <= ROUTE_DIRECT_DEG, 2]), "t_via_back_p50_s": med(q[q[:, 1] > ROUTE_BACK_DEG, 2])}
+    gy = rows[:, 0]
+    return {"all": group(np.ones(len(rows), bool)), "right_lower": group(gy < -ROUTE_SIDE_G),
+            "left_lower": group(gy > ROUTE_SIDE_G)}
 
 
 def _share(xs):
@@ -816,7 +921,7 @@ def schedule_metrics(r, cmd_names: list[str], lo: float, hi: float) -> dict:
     summary = {"n": int(n), "seconds": T * DT, "overall": kick_group_summary(idx, K),
                "longest_down_s_max": float(lon.max()) if n else None,
                "longest_down_s_p90": float(np.percentile(lon, 90)) if n else None,
-               "robots_down_over_15s": int(over15.sum()),
+               "robots_down_over_15s": int(over15.sum()), **down_counts(R),
                "robots_down_open_at_end": int((opn & ~ended).sum()),
                "robots_ended": int(ended.sum()), "ended_timeout": int(sum(x == "timeout" for x in R["end"])),
                "ended_max_getups": int(sum(x == "max_getups" for x in R["end"])),
@@ -892,18 +997,33 @@ def main(argv=None, step_hook=None) -> int:
     ap.add_argument("--kick-t", type=float, default=3.0)
     ap.add_argument("--getup-max", type=int, default=None, help="get-ups before a fall ends the trial (default 3; "
                                                                      "unlimited with --schedule)")
-    ap.add_argument("--getup-timeout", type=float, default=10.0)
+    ap.add_argument("--getup-timeout", type=float, default=20.0, help="s in GETUP before the robot goes limp, as the runner's")
+    ap.add_argument("--handback-tilt", type=float, default=rn.HANDBACK_TILT_DEG, metavar="DEG",
+                    help="hand back below this filtered tilt (default %(default)s)")
+    ap.add_argument("--handback-rms", type=float, default=rn.HANDBACK_RMS_DEG, metavar="DEG",
+                    help="... and with the pose within this rms of the stand (default %(default)s)")
+    ap.add_argument("--handback-gyro", type=float, default=rn.HANDBACK_GYRO, metavar="RAD_S",
+                    help="... and below this rate (default %(default)s)")
     ap.add_argument("--getup-phase-restart", type=float, default=0.0, metavar="S",
                     help="the runner's option: a phased get-up's clock restarts (phi 0) when phi has been 1 for S s "
                          "and the filtered tilt is above 45 deg (0: off)")
     ap.add_argument("--plant", choices=("getup", "walker"), default="getup")
+    ap.add_argument("--masses-json", help="the plant's masses file (a file name in src/mp4_recovery/data/ or a path; "
+                                          "default the walker's plant's)")
     ap.add_argument("--force-getup-t", type=float, help="s: enter GETUP on every walking robot (a plumbing check)")
     ap.add_argument("--json", required=True)
     ap.add_argument("--trace", help="npz: the per-step arrays (mode, 0 walk, 1 get-up; tilt, tilt_cf, vx, vy, alive), steps "
                                     "x robots")
     ap.add_argument("--min-free-mb", type=int, default=1024)
+    from mp4_recovery.gpu.attachment import Attachment
+    from mp4_recovery.eval import reach as reach_gate
     from mp4_recovery.limits import add_eval_args
+    ap.add_argument("--attachment", type=Attachment.parse, metavar="HEIGHT_MM,RADIUS_MM,X_M,MASS_G",
+                    help="a fixed attachment on every robot: a cylinder on the hood and its mass")
     add_eval_args(ap)
+    ap.add_argument("--terrain", metavar="FAMILY", help="start on this rough family or printed stairs")
+    ap.add_argument("--levels", default="3,6", help="--terrain: difficulty levels (0-9)")
+    reach_gate.add_args(ap)
     ap.add_argument("--schedule", type=float, nargs=4, metavar=("LO", "HI", "A", "B"),
                     help="repeated kicks |dv| ~ U(LO, HI) m/s, any direction, every U(A, B) s ")
     ap.add_argument("--sched-commands", default="stand,fwd,left,right",
@@ -932,10 +1052,27 @@ def main(argv=None, step_hook=None) -> int:
     if free is not None and free < a.min_free_mb:
         print(f"refused: {free} MB free on the GPU (< {a.min_free_mb})", flush=True)
         return 2
+    trained = [m.get("actuator") or "md300" for m in metas]
+    if a.actuator is None and len(set(trained)) > 1:
+        print(f"refused: the walker and the get-up were trained on {trained[0]} / {trained[1]}: name --actuator")
+        return 2
     wpol, gpol = load_policy(a.walker), load_policy(a.getup)
     gdir = Path(a.getup)
+    t0 = time.time()
     env, kw, plant = build(a, wpol, gdir)
-    r = run_sequence(env, wpol, gpol, a, step_hook=step_hook)
+    reach = reach_gate.ReachMeter(reach_gate.load_proven(a.reach)) if a.reach else None
+    hook = step_hook
+    if reach is not None:
+        from mp4_recovery.gpu.mdp import servo_action
+
+        def hook(k, env_, mode, entry_k, live):
+            reach.add_servo(servo_action(env_), (mode == 1) & live)
+            if step_hook is not None:
+                step_hook(k, env_, mode, entry_k, live)
+    t1 = time.time()
+    r = run_sequence(env, wpol, gpol, a, step_hook=hook)
+    torch.cuda.synchronize()
+    wall = {"build_s": round(t1 - t0, 1), "run_s": round(time.time() - t1, 1)}
     env.close()
     if a.schedule:
         m = schedule_metrics(r, robot_commands(sched_command_names(a), a.robots)[1], a.schedule[0], a.schedule[1])
@@ -948,6 +1085,9 @@ def main(argv=None, step_hook=None) -> int:
     else:
         m = metrics(r, a.vx)
         m["mode"] = "single"
+    m["route"] = route_summary(r["events"], r["tilt"], r["end_k"])
+    if reach is not None:
+        m["reach"] = reach.report()
     m["limits_on"] = kw.get("limits", False)
     m["stand_offset_abd"] = kw.get("stand_offset_abd")
     if a.trace:
@@ -963,17 +1103,18 @@ def main(argv=None, step_hook=None) -> int:
            "repo_commit": commit, "repo_dirty": bool(dirty), "seed": a.seed, "robots": a.robots, "seconds": a.seconds, "vx": a.vx,
            "kick": {"mps": a.kick, "dir": a.kick_dir, "t_s": a.kick_t}, "getup_max": None if a.getup_max >= NO_MAX else a.getup_max,
            "getup_timeout_s": a.getup_timeout, "getup_phase_restart_s": a.getup_phase_restart,
-           "force_getup_t": a.force_getup_t, "plant": plant,
+           "force_getup_t": a.force_getup_t, "plant": plant, "actuator": plant["actuator"], "terrain": a.terrain,
+           "levels": seq_levels(a) if a.terrain else None,
            "rules": {"cf_tau_s": rn.CF_TAU_S, "cf_gate_g": list(rn.CF_GATE_G), "imu_rate_hz": 1 / DT,
                      "fall": [rn.FALL_TILT_DEG, rn.FALL_HOLD_S, rn.FALL_FAST_TILT_DEG, rn.FALL_FAST_GYRO],
-                     "handback": [rn.HANDBACK_TILT_DEG, rn.HANDBACK_GYRO, rn.HANDBACK_RMS_DEG, rn.HANDBACK_STEPS],
+                     "handback": [a.handback_tilt, a.handback_gyro, a.handback_rms, rn.HANDBACK_STEPS],
                      "walking_again": {"v_mps": WALK_V, "tilt_deg": WALK_TILT_DEG, "hold_s": WALK_HOLD_S}},
            "getup_phase_s": float(gpol.meta.get("getup_phase_s", 0.0) or 0.0),
            "walker_band_deg": policy_band_deg(wpol.meta).tolist(), "getup_band_deg": policy_band_deg(gpol.meta).tolist(),
            "limits": bool(kw.get("limits")), "walker_stand_offset_abd_deg": float(kw.get("stand_offset_abd_deg", 0.0)),
            "getup_stand_offset_abd_deg": policy_stand_offset_deg(gpol.meta),
            "walker_filter_alpha": policy_filter_alpha(wpol.meta), "getup_filter_alpha": policy_filter_alpha(gpol.meta),
-           "events": r["events"], **m}
+           "wall": wall, "events": r["events"], **m}
     Path(a.json).parent.mkdir(parents=True, exist_ok=True)
     Path(a.json).write_text(json.dumps(out, indent=1))
     if a.schedule:
@@ -983,6 +1124,9 @@ def main(argv=None, step_hook=None) -> int:
                   f"within5 {v['within_5s']} t_walk p50 {v['t_walk_s_p50']}", flush=True)
     else:
         print(json.dumps(m["summary"]), flush=True)
+    print("route", json.dumps(m["route"]), flush=True)
+    if reach is not None:
+        reach_gate.print_report(m["reach"])
     return 0
 
 

@@ -19,25 +19,49 @@ read up to 1.7x BAM's on one joint); the deepest floor and self penetration over
 landed (``SETTLE_S``), and sustained: the deepest penetration one geom pair holds on every step of ``SUSTAIN_S`` (0.2 s)
 after ``SETTLE_S`` (impacts sink a body for a few steps). The JSON holds per-trial arrays and a per-start summary.
 ``--motion``: the motion quality and impact of every robot (``motion_meter.MotionMeter``), in each start's summary and per
-trial; ``eval/thresholds.py`` checks them.
+trial. ``--reach``: each leg's commanded and measured hip towards the body's middle,
+over all the starts after ``SETTLE_S``, against the robot's proven reach (``eval/reach.py``): the JSON's ``reach`` and what's
+beyond it printed.
+
+On terrain (``run_terrain_start``; 15 s by default, the runner's retry on):
+
+    python -m mp4_recovery.eval.getup_eval --policy policies/getup --seed 12 --robots 2048 --terrain low_poly,boxes \
+        --levels 3,6 --json runs/eval/rough.json
+    python -m mp4_recovery.eval.getup_eval --policy policies/getup --seed 12 --robots 1024 --terrain stairs4 --json OUT
+
+``--terrain`` names rough families (``getup_task.ROUGH_FAMILIES``, "flat") or printed stairs (``stairs4``, ``stairs8``). Robots
+drop at random positions (``terrain_spawn``), shared evenly among family, level and tile. Up: ``goal_now``, held 0.5 s (rough
+ground: tilt < 40 deg on stairs and < 25 elsewhere, joint rms < 25 deg, gyro < 1.5 rad/s, three feet in contact). A robot
+that resets mid-trial (a physics blow-up) is a failure whatever it did before or after, and is counted in ``resets``. The
+retry restarts the phase clock when it has been at its end for ``--getup-phase-restart`` s and the tilt is above 45 deg. The
+JSON holds per-trial arrays and the summary per start, per family and per family and level.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 import numpy as np
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
 
+from mp4_recovery.deploy.runner import PHASE_RESTART_TILT_DEG
+from mp4_recovery.gpu.attachment import Attachment
 from mp4_recovery.gpu.env_cfg import noise_profile
-from mp4_recovery.gpu.getup_task import (EXACT, SLICES, GetupOptions, GetupStart, SUCCESS_HOLD_S,
-                                        TRACK_Z, _robot_geom_mask, base_z, contact_penetration,
+from mp4_recovery.gpu.getup_task import (EXACT, ROUGH_FAMILIES, SLICES, GetupOptions, GetupStart, SUCCESS_HOLD_S,
+                                        TRACK_Z, _robot_geom_mask, base_z, contact_penetration, goal_now,
                                         make_getup_env_cfg, pair_penetration, policy_filter_alpha_of,
                                         success_now, tilt_deg)
-from mp4_recovery.limits import eval_plant
+from mp4_recovery.gpu import terrain_spawn
+from mp4_recovery.gpu.terrain import LEVELS, PRINTED_STAIRS, family_of
+from mp4_recovery.gpu.mdp import servo_action
+from mp4_recovery.actuators.choice import add_args as add_servo_args, options_from_args
+from mp4_recovery.limits import add_legs_args, eval_legs, eval_plant, legs_flags
+from mp4_recovery.robot.sku2 import legs_meta, legs_of
+from mp4_recovery.eval import reach as reach_gate
 from mp4_recovery.eval.motion_meter import MotionMeter
 from mp4_recovery.eval.terrain_eval import TorchPolicy, bam_currents
 
@@ -49,6 +73,10 @@ GUARD_A, GUARD_S = 1.0, 0.5
 ROBOT_RATIO = 1.7
 SETTLE_S = 0.5          # the spawn's drop (0.06-0.10 m) lands within this
 SUSTAIN_S = 0.2         # one geom pair's depth held this long, after SETTLE_S
+TERRAIN_STARTS = ("left", "right", "nose", "back", "midfall")
+TERRAIN_SECONDS = 15.0
+TILES_PER_CELL = 4      # tiles of each family and level, so a result is not one tile's
+SUNK_M = 0.012          # a base this close to the ground under it has gone through it
 
 
 def start_term(env) -> GetupStart:
@@ -79,12 +107,17 @@ def set_start(env, name: str) -> None:
 
 
 def build(policy_dir: Path, robots: int, seed: int, render: bool = False, contact_solref="run", limits=None,
-          filter_alpha=None, device: str = "cuda:0"):
-    """``contact_solref``: "run" = the policy's run's.
+          filter_alpha=None, device: str = "cuda:0", terrain: dict | None = None, attachment=None,
+          actuator: dict | None = None, legs: dict | None = None, masses_json: str | None = None):
+    """``masses_json``: the plant's masses file (None: the run's option). ``contact_solref``: "run" = the policy's run's. ``terrain``: more ``GetupOptions`` (``terrain_kwargs``).
     ``limits``: the measured joint limits (None: the run's option, else the policy's meta). ``filter_alpha``: the
     decoder's target filter (None: the policy's meta ``action_filter_alpha``, else the run's option, else 0).
     ``device``: the env's (``getup_stream`` builds one robot on the CPU). The widening of the joint limits is the
-    policy's (its meta's bounds, ``limits.eval_plant``)."""
+    policy's (its meta's bounds, ``limits.eval_plant``). ``attachment``: on every robot (none unless given, whatever the
+    policy trained with). ``actuator``: the servo flags (``servo_model.options_from_args``); the model defaults to the
+    policy's meta's ``actuator``, else the run's option, else md300; the supply and winding randomisation are off unless
+    given. ``legs``: the flags (``limits.legs_flags``) over the policy's meta's, else the run's options'
+    (``limits.eval_legs``)."""
     cfg_json = json.loads((policy_dir / "config.json").read_text())
     o = cfg_json["task"]["options"]
     meta = json.loads(str(np.load(policy_dir / "policy.npz")["meta"]))
@@ -92,14 +125,17 @@ def build(policy_dir: Path, robots: int, seed: int, render: bool = False, contac
         limits = bool(o.get("limits", False) or meta.get("limits", False))
     if filter_alpha is None:
         filter_alpha = policy_filter_alpha_of(o, meta)
+    src = meta if meta.get("legs") else {"legs": {k: o.get(k) for k in ("legs", "foot", "foot_radius_m")}}
     opt = GetupOptions(num_envs=robots, noisy=True, noise_ramp=False, randomise=True,
                        noise_end=noise_profile(cfg_json.get("noise", "measured")), band_deg=tuple(o["band_deg"]),
-                       action_scale=tuple(o["action_scale"]), masses_json=o.get("masses_json"),
+                       action_scale=tuple(o["action_scale"]), masses_json=masses_json or o.get("masses_json"),
                        getup_collisions=o.get("getup_collisions", True), thigh_base=o.get("thigh_base", True),
                        thigh_short_m=o.get("thigh_short_m", 0.008), fixed_starts=("random",), visuals=render,
                        contact_solref=contact_solref if contact_solref != "run" else o.get("contact_solref"),
                        episode_s=1.0e3, phase_s=o.get("phase_s", 0.0) or 0.0, limits=bool(limits),
-                       widen_limits_deg=eval_plant(meta)["widen_limits_deg"], filter_alpha=float(filter_alpha))
+                       widen_limits_deg=eval_plant(meta)["widen_limits_deg"], filter_alpha=float(filter_alpha),
+                       attachment=attachment, **servo_options(meta, o, actuator), **eval_legs(src, **(legs or {})),
+                       **(terrain or {}))
     cfg = make_getup_env_cfg(opt)
     cfg.seed = seed
     if render:
@@ -107,6 +143,22 @@ def build(policy_dir: Path, robots: int, seed: int, render: bool = False, contac
         cfg.viewer.distance, cfg.viewer.elevation, cfg.viewer.azimuth = 0.5, -20.0, 135.0
         cfg.viewer.env_idx, cfg.viewer.max_extra_envs = 0, 0
     return ManagerBasedRlEnv(cfg=cfg, device=device, render_mode="rgb_array" if render else None), opt
+
+
+def servo_options(meta: dict, run_options: dict, flags: dict | None = None) -> dict:
+    """The servo model and its randomisation for an evaluation (``GetupOptions`` fields): the flags, else the policy's
+    meta's ``actuator``, else the run's option, else md300; randomisation only from the flags."""
+    flags = dict(flags or {})
+    if flags.get("actuator") is None:
+        flags["actuator"] = meta.get("actuator") or run_options.get("actuator") or None
+    return {k: v for k, v in eval_plant(meta, actuator={k: v for k, v in flags.items() if v is not None}).items()
+            if k in ("actuator", "supply_v_range", "supply_drop_ohm_range", "r_scale_range")}
+
+
+def servo_record(opt) -> dict:
+    """What a result file names about the servo model."""
+    return {"actuator": opt.actuator, "supply_v_range": opt.supply_v_range,
+            "supply_drop_ohm_range": opt.supply_drop_ohm_range, "r_scale_range": opt.r_scale_range}
 
 
 def window_stats(cmax_steps, after_steps, trips_win, t_succ, seconds) -> dict:
@@ -135,7 +187,7 @@ def goal_criteria(env):
 
 
 def run_start(env, pol, name: str, seconds: float, seed: int, frames: list | None = None,
-              noise: float = 0.0, meter: MotionMeter | None = None) -> dict:
+              noise: float = 0.0, meter: MotionMeter | None = None, reach: reach_gate.ReachMeter | None = None) -> dict:
     set_start(env, name)
     torch.manual_seed(seed)
     obs, _ = env.reset()
@@ -178,6 +230,8 @@ def run_start(env, pol, name: str, seconds: float, seed: int, frames: list | Non
         obs, _, _, _, _ = env.step(act)
         if meter is not None:
             meter.update(env)
+        if reach is not None and k >= settle:             # the spawn's own pose isn't the policy's
+            reach.add_servo(servo_action(env), torch.ones(n, dtype=torch.bool, device=dev))
         if frames is not None:
             frames.append(env.render())
         ok, ok_h, ok_ng = goal_criteria(env)
@@ -261,15 +315,168 @@ def run_start(env, pol, name: str, seconds: float, seed: int, frames: list | Non
     return {"summary": summary, "trials": trial}
 
 
+def terrain_kwargs(families: list[str], levels: list[int], relief_pitch: float | None = None) -> dict:
+    """``GetupOptions`` for ``families`` up to the highest of ``levels``; every tile unseen in training."""
+    rows = max(levels) + 1
+    columns = [f for f in families for _ in range(1 if f in PRINTED_STAIRS or f == "flat" else TILES_PER_CELL)]
+    return {"terrain": "families", "families": tuple(columns), "rows": rows, "difficulty_max": rows / LEVELS,
+            "terrain_seed": 1, "relief_pitch": relief_pitch}
+
+
+def terrain_cells(columns: list[str], levels: list[int]) -> list[tuple[int, int]]:
+    """(row, column) of every family, level and tile, so ``i % len`` shares robots evenly among families and levels."""
+    fams = list(dict.fromkeys(family_of(c) for c in columns))
+    per = {f: [i for i, c in enumerate(columns) if family_of(c) == f] for f in fams}
+    n = max(len(v) for v in per.values())
+    return [(lv, per[f][k % len(per[f])]) for f in fams for lv in levels for k in range(n)]
+
+
+class UpTracker:
+    """Per robot, the time it first held a rule for ``hold`` steps. A robot that resets is out for good: its later steps
+    are another robot's attempt, and an earlier success is forgotten."""
+
+    def __init__(self, n: int, hold: int, device):
+        self.hold = hold
+        self.run = torch.zeros(n, dtype=torch.long, device=device)
+        self.t_up = torch.full((n,), -1.0, device=device)
+        self.out = torch.zeros(n, dtype=torch.bool, device=device)
+
+    def update(self, ok: torch.Tensor, reset: torch.Tensor, t: float) -> None:
+        self.out |= reset
+        self.run = torch.where(ok & ~self.out, self.run + 1, torch.zeros_like(self.run))
+        self.t_up = torch.where((self.run >= self.hold) & (self.t_up < 0), t, self.t_up)
+        self.t_up = torch.where(self.out, -1.0, self.t_up)
+
+
+def run_terrain_start(env, pol, name: str, seconds: float, seed: int, restart_after_s: float, step_hook=None) -> dict:
+    """One batch from start ``name``. ``restart_after_s``: the retry's phase-clock restart (0: none). ``step_hook(k)``
+    runs before step k. Returns per-trial numpy arrays."""
+    spawn = env.terrain_spawn
+    set_start(env, name)
+    torch.manual_seed(seed)
+    obs, _ = env.reset()
+    n, dev = env.num_envs, env.device
+    robot = env.scene["robot"]
+    origin = env.scene.env_origins.clone()
+    hold = int(round(SUCCESS_HOLD_S / DT))
+    up, strict = UpTracker(n, hold, dev), UpTracker(n, hold, dev)
+    phase_k = torch.zeros(n, dtype=torch.long, device=dev)
+    restarts = torch.zeros(n, dtype=torch.long, device=dev)
+    peak = torch.zeros(n, device=dev)
+    for k in range(int(round(seconds / DT))):
+        if step_hook is not None:
+            step_hook(k)
+        obs, _, term, trunc, _ = env.step(pol(obs["actor"]))
+        reset = term | trunc
+        t = (k + 1) * DT
+        up.update(goal_now(env), reset, t)
+        strict.update(success_now(env), reset, t)
+        c = bam_currents(env)
+        if c is not None:
+            peak = torch.maximum(peak, c.max(-1).values * (up.t_up < 0).float())
+        if restart_after_s > 0.0:
+            due = ((k - phase_k).float() * DT >= restart_after_s - 1e-9) & (up.t_up < 0) & ~up.out
+            due &= tilt_deg(env) > PHASE_RESTART_TILT_DEG
+            if bool(due.any()):
+                env.episode_length_buf[due] = 0
+                phase_k[due] = k
+                restarts[due] += 1
+    p = robot.data.root_link_pos_w
+    ground = spawn.ground
+    return {"t_up": up.t_up.cpu().numpy(), "t_strict": strict.t_up.cpu().numpy(), "reset": up.out.cpu().numpy(),
+            "restarts": restarts.cpu().numpy(), "final_tilt_deg": tilt_deg(env).cpu().numpy(),
+            "row": spawn.row.cpu().numpy(), "col": spawn.col.cpu().numpy(), "peak_A": peak.cpu().numpy(),
+            "drop_m": (origin[:, 2] - ground.under(origin[:, :2])).cpu().numpy(),
+            "moved_m": (p[:, :2] - origin[:, :2]).norm(dim=-1).cpu().numpy(),
+            "height_m": (p[:, 2] - ground.under(p[:, :2])).cpu().numpy()}
+
+
+def terrain_summary(tr: dict, mask: np.ndarray, first_try_s: float) -> dict:
+    """A summary of the trials ``mask``. ``never_up`` splits into the resets and, by the final tilt, the rest."""
+    t, reset, tilt = tr["t_up"][mask], tr["reset"][mask], tr["final_tilt_deg"][mask]
+    up = t >= 0
+    down = ~up & ~reset
+    return {"n": int(mask.sum()), "up": float(up.mean()), "strict": float((tr["t_strict"][mask] >= 0).mean()),
+            "up_first_try": float(((t >= 0) & (t <= first_try_s)).mean()),
+            "t_up_p50": float(np.median(t[up])) if up.any() else None,
+            "never_up": int((~up).sum()), "resets": int(reset.sum()), "down_on_back": int((down & (tilt > 120)).sum()),
+            "down_on_side": int((down & (tilt > PHASE_RESTART_TILT_DEG) & (tilt <= 120)).sum()),
+            "down_low_tilt": int((down & (tilt <= PHASE_RESTART_TILT_DEG)).sum()),
+            "restarts_mean": float(tr["restarts"][mask].mean()), "peak_A_p90": float(np.percentile(tr["peak_A"][mask], 90)),
+            "drop_mm_p50": float(np.median(tr["drop_m"][mask]) * 1000),
+            "drop_mm_p90": float(np.percentile(tr["drop_m"][mask], 90) * 1000),
+            "moved_m_p90": float(np.percentile(tr["moved_m"][mask], 90)),
+            "sunk": int((tr["height_m"][mask] < SUNK_M).sum())}
+
+
+def terrain_main(a, pdir: Path, pol, contact_solref) -> int:
+    families = [f for f in a.terrain.split(",") if f]
+    known = ROUGH_FAMILIES + tuple(PRINTED_STAIRS) + ("flat",)
+    assert all(f in known for f in families), (families, known)
+    levels = [int(v) for v in a.levels.split(",")]
+    if all(f in PRINTED_STAIRS for f in families):      # the same flight at every level
+        levels = [0]
+    seconds = a.seconds if a.seconds is not None else TERRAIN_SECONDS
+    starts = [s for s in (a.starts or ",".join(TERRAIN_STARTS)).split(",") if s]
+    assert all(s in STARTS + SLICE_STARTS for s in starts), starts
+    env, opt = build(pdir, a.robots, a.seed, contact_solref=contact_solref, limits=a.limits, filter_alpha=a.filter_alpha,
+                     terrain=terrain_kwargs(families, levels, a.relief_pitch), attachment=a.attachment,
+                     actuator=options_from_args(a), legs=legs_flags(a), masses_json=a.masses_json)
+    spawn = env.terrain_spawn
+    cells = terrain_cells(spawn.columns, levels)
+    k = torch.arange(a.robots) % len(cells)
+    table = torch.tensor(cells)[k].to(env.device)
+    spawn.fix_cells(table[:, 0], table[:, 1])
+    restart = float(opt.phase_s) + a.getup_phase_restart if opt.phase_s else 0.0
+    first_try = restart or seconds
+    col_family = np.array(spawn.families)
+    out = {"masses_json": a.masses_json, "policy": str(pdir), "seed": a.seed, "robots": a.robots, "seconds": seconds, "levels": levels,
+           "families": families, "phase_restart_after_s": restart, "limits": bool(opt.limits), **servo_record(opt),
+           "legs_geometry": legs_meta(legs_of(opt)),
+           "relief_pitch": opt.relief_pitch,
+           "up_rule": {"tilt_stairs_deg": terrain_spawn.UP_TILT_STAIRS_DEG, "tilt_deg": terrain_spawn.UP_TILT_DEG,
+                       "rms_deg": terrain_spawn.UP_RMS_DEG, "gyro": terrain_spawn.UP_GYRO, "feet": terrain_spawn.UP_FEET,
+                       "hold_s": SUCCESS_HOLD_S}, "starts": {}, "by_family": {}}
+    all_trials = []
+    for s in starts:
+        tr = run_terrain_start(env, pol, s, seconds, a.seed, restart)
+        fam = col_family[tr["col"]]
+        all_trials.append({**tr, "family": fam})
+        res = {"summary": terrain_summary(tr, np.ones(a.robots, dtype=bool), first_try), "by_family": {},
+               "trials": {k_: np.round(v, 4).tolist() if v.dtype.kind == "f" else v.tolist() for k_, v in tr.items()}}
+        for f in families:
+            res["by_family"][f] = terrain_summary(tr, fam == f, first_try)
+            print(s, f, json.dumps(res["by_family"][f]), flush=True)
+        out["starts"][s] = res
+    joined = {k_: np.concatenate([t[k_] for t in all_trials]) for k_ in all_trials[0]}
+    out["summary"] = terrain_summary(joined, np.ones(len(joined["t_up"]), dtype=bool), first_try)
+    for f in families:
+        m = joined["family"] == f
+        out["by_family"][f] = {"all": terrain_summary(joined, m, first_try),
+                               "levels": {str(lv): terrain_summary(joined, m & (joined["row"] == lv), first_try)
+                                          for lv in levels}}
+        print("family", f, json.dumps(out["by_family"][f]["all"]), flush=True)
+    env.close()
+    Path(a.json).parent.mkdir(parents=True, exist_ok=True)
+    Path(a.json).write_text(json.dumps(out, indent=1))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--policy", required=True, help="an exported policy directory (policy.npz + config.json)")
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--json", required=True)
     ap.add_argument("--robots", type=int, default=256, help="robots per start (<= 1024)")
-    ap.add_argument("--starts", default=",".join(STARTS))
-    ap.add_argument("--seconds", "--trial-s", dest="seconds", type=float, default=6.0,
-                    help="s per trial")
+    ap.add_argument("--starts", help=f"default {','.join(STARTS)}; on terrain {','.join(TERRAIN_STARTS)}")
+    ap.add_argument("--seconds", "--trial-s", dest="seconds", type=float,
+                    help=f"s per trial (default 6; on terrain {TERRAIN_SECONDS:g})")
+    ap.add_argument("--terrain", metavar="FAMILY[,FAMILY]", help="drop on these rough families or printed stairs "
+                    "(stairs4, stairs8) at random positions, with the runner's retry")
+    ap.add_argument("--levels", default="3,6", help="--terrain: difficulty levels (0-9)")
+    ap.add_argument("--getup-phase-restart", type=float, default=1.0, metavar="S",
+                    help="--terrain: the retry, S s after the phase clock reached its end (the runner's option)")
+    ap.add_argument("--relief-pitch", type=float, metavar="M", help="--terrain: the reliefs' heightfield pitch")
     ap.add_argument("--action-noise", type=float, default=0.0,
                     help="add N(0, this) to the policy's actions every step (the training's exploration noise)")
     ap.add_argument("--video", help="mp4: one robot (env 0) of --video-start, rendered in its own env")
@@ -283,40 +490,61 @@ def main() -> int:
     ap.add_argument("--filter-alpha", type=float, metavar="X",
                     help="the decoder's target filter alpha (default: the policy's meta action_filter_alpha, else the "
                          "run's option filter_alpha, else 0)")
+    ap.add_argument("--masses-json", help="the plant's masses file (a file name in src/mp4_recovery/data/ or a path; "
+                                          "default the run's)")
+    ap.add_argument("--attachment", type=Attachment.parse, metavar="HEIGHT_MM,RADIUS_MM,X_M,MASS_G",
+                    help="a fixed attachment on every robot: a cylinder on the hood and its mass")
     ap.add_argument("--motion", action="store_true",
                     help="measure motion quality and impact (motion_meter) into each start's summary and trials")
+    add_legs_args(ap, "the policy's meta, else its run's options, else sku_2")
+    reach_gate.add_args(ap)
+    add_servo_args(ap, evaluation=True)
     a = ap.parse_args()
-    starts = [s for s in a.starts.split(",") if s]
-    assert all(s in STARTS + SLICE_STARTS for s in starts), starts
-    assert a.robots <= 1024, "keep a job at <= 1024 envs"
     pdir = Path(a.policy)
     pol = TorchPolicy(pdir / "policy.npz", "cuda:0")
     cs = a.contact_solref
     cs = "run" if cs == ["run"] else None if cs == ["none"] else tuple(float(v) for v in cs)
-    env, opt = build(pdir, a.robots, a.seed, contact_solref=cs, limits=a.limits, filter_alpha=a.filter_alpha)
-    out = {"policy": str(pdir), "seed": a.seed, "robots": a.robots, "seconds": a.seconds,
+    if a.terrain:
+        assert not (a.video or a.motion or a.action_noise), "--terrain takes no --video, --motion or --action-noise"
+        assert a.robots <= 4096, "keep a job at <= 4096 envs"
+        return terrain_main(a, pdir, pol, cs)
+    a.seconds = 6.0 if a.seconds is None else a.seconds
+    starts = [s for s in (a.starts or ",".join(STARTS)).split(",") if s]
+    assert all(s in STARTS + SLICE_STARTS for s in starts), starts
+    assert a.robots <= 1024, "keep a job at <= 1024 envs"
+    env, opt = build(pdir, a.robots, a.seed, contact_solref=cs, limits=a.limits, filter_alpha=a.filter_alpha,
+                     attachment=a.attachment, actuator=options_from_args(a), legs=legs_flags(a), masses_json=a.masses_json)
+    out = {"masses_json": a.masses_json, "policy": str(pdir), "seed": a.seed, "robots": a.robots, "seconds": a.seconds,
            "band_deg": list(opt.band_deg), "action_scale": list(opt.action_scale),
-           "contact_solref": opt.contact_solref, "limits": bool(opt.limits), "filter_alpha": opt.filter_alpha, "action_noise": a.action_noise, "sustain_s": SUSTAIN_S, "settle_s": SETTLE_S,
+           "contact_solref": opt.contact_solref, "limits": bool(opt.limits), **servo_record(opt),
+           "legs_geometry": legs_meta(legs_of(opt)),
+           "filter_alpha": opt.filter_alpha, "action_noise": a.action_noise, "sustain_s": SUSTAIN_S, "settle_s": SETTLE_S,
+           "attachment": asdict(a.attachment) if a.attachment else None,
            "current_sampling": "per policy step (20 ms), |tau|/kt of the last physics step",
            "guard": {"amps": GUARD_A, "seconds": GUARD_S, "ratios": [1.0, ROBOT_RATIO]}, "starts": {}}
     meter = MotionMeter(env) if a.motion else None
     if meter is not None:
         out["motion"] = meter.config()
+    reach = reach_gate.ReachMeter(reach_gate.load_proven(a.reach)) if a.reach else None
     for s in starts:
-        r = run_start(env, pol, s, a.seconds, a.seed, noise=a.action_noise, meter=meter)
+        r = run_start(env, pol, s, a.seconds, a.seed, noise=a.action_noise, meter=meter, reach=reach)
         out["starts"][s] = r
         print(json.dumps({k: v for k, v in r["summary"].items() if k != "motion"}), flush=True)
         if meter is not None:
             g = r["summary"]["motion"]["getup"]
             print("motion", s, json.dumps({k: g[k]["mean"] for k in ("rev5", "rev10", "pow3", "da2", "speed_rms")}),
                   flush=True)
+    if reach is not None:
+        out["reach"] = reach.report()
+        reach_gate.print_report(out["reach"])
     if meter is not None:
         meter.detach()
     env.close()
     if a.video:
         import imageio.v2 as imageio
         venv, _ = build(pdir, 1, a.seed, render=True, contact_solref=cs, limits=opt.limits,
-                        filter_alpha=opt.filter_alpha)
+                        filter_alpha=opt.filter_alpha, attachment=a.attachment, actuator=options_from_args(a),
+                        legs=legs_flags(a), masses_json=a.masses_json)
         frames = []
         r = run_start(venv, pol, a.video_start, a.seconds, a.seed, frames=frames)
         Path(a.video).parent.mkdir(parents=True, exist_ok=True)

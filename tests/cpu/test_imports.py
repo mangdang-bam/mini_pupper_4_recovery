@@ -3,7 +3,7 @@ import importlib
 
 import pytest
 
-MODULES = ("contract", "limits", "paths", "heading", "obs_norm", "policy_file", "export_policy", "gpu.actor", "eval.thresholds")
+MODULES = ("contract", "limits", "paths", "heading", "obs_norm", "policy_file", "export_policy", "gpu.actor", "eval.reach")
 
 
 @pytest.mark.parametrize("name", MODULES)

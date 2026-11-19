@@ -192,3 +192,17 @@ def test_getup_eval_and_search_carry_the_motion_block():
     meter.detach()
     env.close()
     assert m["summary"]["getup"]["rev5"]["n"] == n
+
+
+def test_getup_eval_feeds_the_reach_meter():
+    """run_start(reach=...) measures every robot at every step after the spawn's drop, in the proven reach's terms."""
+    from mp4_recovery.eval import getup_eval as ev
+    from mp4_recovery.eval import reach
+    env = _env(4)
+    meter = reach.ReachMeter()
+    pol = lambda obs: torch.zeros(obs.shape[0], 12, device=obs.device)       # noqa: E731
+    ev.run_start(env, pol, "left", 1.0, 3, reach=meter)
+    env.close()
+    assert len(meter.samples["commanded"]) == 25 and meter.samples["measured"][0].shape == (4, 4, 2)
+    rep = meter.report()
+    assert all(abs(r["commanded_peak_deg"]) < 20.0 for r in rep["legs"].values())     # the policy asks for the stand
