@@ -1,0 +1,51 @@
+{
+ "about": "The robot's proven reach, from 28 run logs on the robot (809.5 s): per leg and abduction bin, how far the hip has gone towards the body's middle, and where a joint has stalled",
+ "frame": "deg from the calibrated stand; abduction + = outward; a stall's position in the servo's dd direction",
+ "percentile": 99.5,
+ "min_samples": 20,
+ "abd_bins_deg": [-25, -15, -10, -6, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30],
+ "logs": {
+  "count": 28,
+  "seconds": 809.5
+ },
+ "legs": {
+  "FR": {
+   "towards_middle": "backward",
+   "max_deg": 53.0,
+   "reach_deg": [8.8, 13.9, 18.0, 47.2, 51.5, 53.0, 53.0, 52.8, 51.7, 41.5, 17.0, 15.6, 23.0, 20.9, 18.5, 14.8, 19.1, 16.3, 15.6, 18.8]
+  },
+  "FL": {
+   "towards_middle": "backward",
+   "max_deg": 89.4,
+   "reach_deg": [null, 3.6, 43.1, 59.0, 67.7, 73.3, 80.1, 79.9, 84.4, 89.4, 53.7, 86.5, 82.4, 85.5, 49.2, 46.4, 10.7, 17.8, 35.8, 23.6]
+  },
+  "RR": {
+   "towards_middle": "forward",
+   "max_deg": 40.1,
+   "reach_deg": [null, 40.1, 35.0, 21.9, 16.2, 12.6, 9.5, 5.9, 4.6, 5.1, 5.3, 4.7, 3.4, 6.8, 7.5, 7.7, 6.5, 10.7, 10.7, 7.3]
+  },
+  "RL": {
+   "towards_middle": "forward",
+   "max_deg": 19.3,
+   "reach_deg": [-81.2, -65.7, -43.1, -37.2, -29.6, -18.8, -6.1, -0.9, 2.6, 4.1, 8.7, 9.9, 14.8, 15.7, 17.6, 17.8, 9.6, 4.8, 11.4, 19.3]
+  }
+ },
+ "stall_rule": {
+  "above_ma": 1000.0,
+  "under_deg_s": 15.0,
+  "short_of_target_deg": 12.0,
+  "at_least_s": 0.15
+ },
+ "stalls": {
+  "FR_thigh": {
+   "runs": 18,
+   "seconds": 7.55,
+   "position_deg": [-52.9, -51.2]
+  },
+  "FR_calf": {
+   "runs": 6,
+   "seconds": 1.31,
+   "position_deg": [-138.6, -137.0]
+  }
+ }
+}
