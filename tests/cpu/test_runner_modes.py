@@ -1,13 +1,13 @@
 """The runner's modes and stops against the fake robot: walk, fall, get-up, retry, hand-back, limp."""
 import json
 import math
-from pathlib import Path
+import shutil
 
 import numpy as np
-
 from fake_esp32 import fall_and_rise, roll
-from mp4_recovery.deploy import runner as rn
-from robot_helpers import RAMP_TICKS, C, go
+from robot_helpers import RAMP_TICKS, ROBOT_META, C, go
+
+from mp4_rl.getup.runner import runner as rn
 
 POLICY_START = RAMP_TICKS + 4
 
@@ -32,6 +32,41 @@ def test_run_writes_the_gains_holds_the_stand_and_logs(robot, tmp_path):
     assert len(raw["sent_seq"]) > 0 and len(raw["pos_dd"]) > 0 and not robot.armed
 
 
+def stored_pwm_scale(robot, monkeypatch, value, servo=4):
+    """``servo`` stores ``value`` whatever pwm_scale it is sent."""
+    real = robot._request
+
+    def other(frame):
+        _, cmd, sid, pad, _, _ = rn.p.REQ.unpack(frame[:8])
+        if cmd == rn.p.CMD_SET_PARAM and pad == rn.p.PARAM_ID["pwm_scale"] and sid == servo:
+            frame = rn.p.pack_request(cmd, sid, *rn.p.float_args(value), pad=pad)
+        real(frame)
+    monkeypatch.setattr(robot, "_request", other)
+
+
+def test_run_writes_pwm_scale(robot, tmp_path):
+    pid = rn.p.PARAM_ID["pwm_scale"]
+    rc, _, _ = go(robot, tmp_path, seconds=0.2)
+    assert rc == 0 and all(abs(robot.params[s][pid] - rn.PWM_SCALE) < 1e-9 for s in range(1, 13))
+
+
+def test_run_accepts_pwm_scale_within_2_percent(robot, tmp_path, monkeypatch):
+    stored_pwm_scale(robot, monkeypatch, 0.00101)
+    rc, _, meta = go(robot, tmp_path, seconds=0.2)
+    assert rc == 0 and meta["stop_reason"] == "completed"
+
+
+def test_run_refuses_pwm_scale_off_by_more_than_2_percent(robot, tmp_path, monkeypatch):
+    stored_pwm_scale(robot, monkeypatch, 0.00103)
+    try:
+        go(robot, tmp_path)
+    except SystemExit as exc:
+        assert "servo 4 pwm_scale" in str(exc)
+    else:
+        raise AssertionError("no refusal")
+    assert not robot.armed_seen
+
+
 def test_step_limit_acts(robot, tmp_path):
     rc, z, _ = go(robot, tmp_path, walker_bias=1.0, seconds=0.2)
     step = np.abs(np.diff(z["rel"], axis=0))
@@ -48,21 +83,45 @@ def test_refuses_without_imu(robot, tmp_path):
         raise AssertionError("no refusal")
 
 
-def test_refuses_a_hot_start(robot, tmp_path):
-    robot.temps_dc = [460] * 12
-    try:
-        go(robot, tmp_path)
-    except SystemExit as exc:
-        assert "degC" in str(exc)
-    else:
-        raise AssertionError("no refusal")
+def test_a_refused_arm_for_a_hot_servo_stops_the_run(robot, tmp_path):
+    """The firmware refuses the ARM (a servo at 45 degC or above, ``ST_HOT``): the runner stops at the first STATE after
+    its arming frame, naming the servo and its temperature, and nothing moves."""
+    robot.temps_dc[4] = 461
+    rc, _, meta = go(robot, tmp_path, seconds=1.0)
+    assert rc == 0 and meta["stop_reason"].startswith("disarm: link: servo 5 at 46.1 degC: the firmware refused to arm")
     assert not robot.armed_seen
 
 
-def test_offsets_warn_only(robot, tmp_path):
-    robot.offsets[1] += 3.0
+def test_a_temperature_trip_stops_the_run(robot, tmp_path):
+    """The firmware disarms after a driven servo has been at 55 degC for 1 s (``ST_FAULT_TEMP``): the runner stops with
+    the servo and its temperature."""
+    orig = robot.before_tick
+
+    def tick():
+        orig()
+        if len(robot.armed_seen) > POLICY_START + 20:
+            robot.temps_dc[1] = 562
+    robot.before_tick = tick
+    rc, _, meta = go(robot, tmp_path, seconds=4.0)
+    assert rc == 0 and "servo 2 at 56.2 degC: the firmware disarmed at 55 degC" in meta["stop_reason"]
+    assert not robot.armed
+
+
+def test_offsets_within_a_degree_warn_only(robot, tmp_path):
+    robot.offsets[1] += 0.5
     rc, _, meta = go(robot, tmp_path, seconds=0.2)
     assert rc == 0 and any("offsets" in w for w in meta["warnings"])
+
+
+def test_offsets_beyond_a_degree_refuse(robot, tmp_path):
+    robot.offsets[1] += 3.0
+    try:
+        go(robot, tmp_path, seconds=0.2)
+    except SystemExit as exc:
+        assert "contract" in str(exc)
+    else:
+        raise AssertionError("no refusal")
+    assert not robot.armed_seen
 
 
 def test_a_latched_fault_needs_clear(robot, tmp_path):
@@ -90,40 +149,6 @@ def test_imu_dropout_stops(robot, tmp_path):
     robot.before_tick = tick
     _, _, meta = go(robot, tmp_path, seconds=2.0)
     assert meta["stop_reason"].startswith("stop: IMU frame invalid")
-
-
-def hot_after(robot, ticks, seconds=None, dc=672):
-    """A housing reads ``dc`` from ``ticks`` armed ticks on, for ``seconds`` (None: from then on)."""
-    orig = robot.before_tick
-
-    def tick():
-        orig()
-        n = len(robot.armed_seen) - ticks
-        robot.temps_dc[1] = dc if n >= 0 and (seconds is None or n * 0.005 < seconds) else 336
-    robot.before_tick = tick
-
-
-def test_a_brief_doubled_temperature_reading_does_not_stop(robot, tmp_path):
-    hot_after(robot, POLICY_START + 20, seconds=0.1)     # long enough for several steps to read it
-    _, _, meta = go(robot, tmp_path, seconds=1.0)
-    assert meta["stop_reason"] == "completed"
-
-
-def test_a_sustained_rise_stops_after_a_second(robot, tmp_path):
-    hot_after(robot, POLICY_START + 20, dc=560)
-    _, z, meta = go(robot, tmp_path, seconds=4.0)
-    assert meta["stop_reason"] == "stop: servo at 56.0 degC"
-    since_hot = (len(z["tick"]) + 1) * 0.02 - (POLICY_START + 20 - RAMP_TICKS) * 0.005
-    assert 0.95 <= since_hot <= 1.2, since_hot
-    assert sent_after_last_step(tmp_path, z) >= 50      # walking: a ramp to the stand
-
-
-def test_a_sustained_rise_in_a_getup_goes_limp(robot, tmp_path):
-    robot.script, robot.script_at = roll([(0.3, 90.0)]), POLICY_START + 10
-    hot_after(robot, POLICY_START + 100, dc=560)
-    _, z, meta = go(robot, tmp_path, seconds=4.0)
-    assert meta["stop_reason"] == "stop: servo at 56.0 degC (in GETUP: limp)"
-    assert sent_after_last_step(tmp_path, z) == 2       # the step that saw it, and the DISARM frame
 
 
 def test_fall_enters_getup_and_hands_back(robot, tmp_path):
@@ -200,11 +225,21 @@ def test_end_of_time_walking_ramps_to_the_stand(robot, tmp_path):
 
 
 def test_get_up_observes_its_phase_from_each_entry(robot, tmp_path):
+    """The clock counts the board's 5 ms ticks, so it is judged against the logged ticks: a step can arrive a tick late."""
     robot.script, robot.script_at = roll(fall_and_rise(lie_s=0.6, up_s=1.0) * 2), POLICY_START + 10
+    before_tick = robot.before_tick
+
+    def slip():
+        if robot.script_tick is not None and robot.tick == robot.script_tick + 100:
+            robot.tick += 5
+        before_tick()
+
+    robot.before_tick = slip
     _, z, meta = go(robot, tmp_path, seconds=7.0)
+    assert len(meta["getups"]) == 2 and np.diff(z["tick"][meta["getups"][0]["step"]:meta["getups"][0]["end_step"]]).max() > 4
     for ev in meta["getups"]:
         k0, k1 = ev["step"], ev["end_step"]
-        phi = (np.arange(k1 - k0)) * 0.02 / 4.0
+        phi = (z["tick"][k0:k1] - z["tick"][k0]) * 0.005 / 4.0
         assert np.allclose(z["obs"][k0:k1, 6], phi, atol=1e-5)
         assert np.allclose(z["obs"][k0:k1, 7], np.sin(2 * np.pi * phi), atol=1e-5)
     walk = z["mode"] == 0
@@ -307,7 +342,9 @@ def test_history_policy_clears_its_history_at_a_hand_back(robot, tmp_path, monke
     walker = tmp_path / "w"
     d = walker
     d.mkdir()
-    meta = {"omni": True, "history": 2, "contract_sha256": rn.paths.sha256(rn.CONTRACT_JSON)}
+    from robot_helpers import TEST_CONTRACT_JSON
+    shutil.copyfile(TEST_CONTRACT_JSON, d / "sku2_contract.json")
+    meta = {"omni": True, "history": 2, "contract_sha256": rn.paths.sha256(TEST_CONTRACT_JSON), **ROBOT_META}
     np.savez(d / "policy.npz", n_layers=1, scale=np.full(12, 0.3, dtype=np.float32), meta=json.dumps(meta),
              fixture_obs=np.zeros((2, 90), dtype=np.float32), fixture_act=np.zeros((2, 12), dtype=np.float32),
              W0=np.zeros((12, 90), dtype=np.float32), b0=np.zeros(12, dtype=np.float32))
@@ -319,16 +356,6 @@ def test_history_policy_clears_its_history_at_a_hand_back(robot, tmp_path, monke
     z = np.load(tmp_path / "run.policy.npz")
     assert rc == 0 and json.loads(str(z["meta"]))["getups"][0]["end"] == "hand-back"
     assert len(seen) >= 2                       # at the start, and at the hand-back
-
-
-def test_the_simulation_only_get_up_runs_from_its_flag(robot, tmp_path):
-    root = Path(__file__).resolve().parents[2]
-    robot.script, robot.script_at = roll(fall_and_rise(lie_s=0.6, up_s=1.0)), POLICY_START + 10
-    rc = rn.main(["--port", robot.port, "run", "--policy", str(root / "policies/walker"),
-                  "--getup-policy", str(root / "policies/getup_sim"), "--stand-ramp", "0.2", "--seconds", "3",
-                  "--log", str(tmp_path / "run")])
-    meta = json.loads(str(np.load(tmp_path / "run.policy.npz")["meta"]))
-    assert rc == 0 and meta["getups"][0]["end"] == "hand-back", meta["stop_reason"]
 
 
 def test_a_bad_target_in_the_loop_disarms(robot, tmp_path, monkeypatch):
@@ -397,3 +424,44 @@ def test_a_start_reading_in_the_zone_prints_then_the_start_refuses(robot, tmp_pa
     else:
         raise AssertionError("no refusal")
     assert "at the start" in capsys.readouterr().out and not robot.armed_seen
+
+
+def rise_to(tilt_deg):
+    return roll([(0.3, 90.0), (0.5, 90.0), (0.3, tilt_deg), (3.0, tilt_deg)])
+
+
+def test_hand_back_defaults():
+    assert (rn.HANDBACK_TILT_DEG, rn.HANDBACK_GYRO, rn.HANDBACK_RMS_DEG, rn.HANDBACK_STEPS) == (12.0, 0.8, 10.0, 25)
+
+
+def test_hand_back_rules_by_default_are_the_constants(robot, tmp_path):
+    robot.script, robot.script_at = rise_to(20.0), POLICY_START + 10
+    _, _, meta = go(robot, tmp_path, "--getup-timeout", "2.5", seconds=4.0)
+    (ev,) = meta["getups"]
+    assert ev["end"] == "timeout" and meta["getup_rules"]["handback"] == [12.0, 0.8, 10.0, 25]
+
+
+def test_hand_back_tilt_option(robot, tmp_path):
+    robot.script, robot.script_at = rise_to(20.0), POLICY_START + 10
+    _, _, meta = go(robot, tmp_path, "--getup-timeout", "2.5", "--handback-tilt", "30", seconds=4.0)
+    assert meta["getups"][0]["end"] == "hand-back" and meta["getup_rules"]["handback"][0] == 30.0
+
+
+def test_hand_back_rms_option(robot, tmp_path):
+    gb = np.full(12, math.radians(25.0) / 1.57)    # the pose 25 deg rms from the stand
+    robot.script, robot.script_at = rise_to(0.0), POLICY_START + 10
+    _, _, meta = go(robot, tmp_path, "--getup-timeout", "3.5", "--handback-rms", "30", seconds=5.0, getup_bias=gb)
+    assert meta["getups"][0]["end"] == "hand-back"
+
+
+def test_hand_back_rms_default_refuses_that_pose(robot, tmp_path):
+    gb = np.full(12, math.radians(25.0) / 1.57)
+    robot.script, robot.script_at = rise_to(0.0), POLICY_START + 10
+    _, _, meta = go(robot, tmp_path, "--getup-timeout", "3.5", seconds=5.0, getup_bias=gb)
+    assert meta["getups"][0]["end"] == "timeout"
+
+
+def test_hand_back_gyro_option(robot, tmp_path):
+    robot.script, robot.script_at = rise_to(0.0), POLICY_START + 10
+    _, _, meta = go(robot, tmp_path, "--getup-timeout", "2.5", "--handback-gyro", "0", seconds=4.0)
+    assert meta["getups"][0]["end"] == "timeout" and meta["getup_rules"]["handback"][1] == 0.0

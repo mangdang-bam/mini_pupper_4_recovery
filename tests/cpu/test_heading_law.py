@@ -2,7 +2,7 @@
 import numpy as np
 import torch
 
-from mp4_recovery.heading import pi_step
+from mp4_rl.common.heading import pi_step
 
 
 def test_torch_matches_numpy():

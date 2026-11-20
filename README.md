@@ -1,141 +1,112 @@
-# mini_pupper_4_recovery
+# mini_pupper_4_rl
 
-Fall recovery for the Mini Pupper v4 (SKU2): rides out shoves, gets up from the falls tested so far, and walks on. This repository has
-the get-up training recipe, the evaluation, the program that runs on the robot, and the trained policies.
+Reinforcement-learning skills for the Mini Pupper v4: trained policies, the recipes that trained them, their evaluation
+in simulation and the code that runs them on the robot. The robot models, their measured data and the simulation come
+from [mini_pupper_4_sim](https://github.com/mangdangroboticsclub/mini_pupper_4_sim) (package `mp4_sim`, release
+v0.2.0).
 
-<p align="center">
-  <img src="docs/media/getup_simulation.gif" width="720" alt="The get-up in simulation from four fall poses">
-</p>
-<p align="center">
-  <img src="docs/media/shove_recovery_robot.gif" width="320" alt="Shoves and falls on the real robot">
-</p>
+## Skills
 
-## Policies
+| Skill | What it does | SKU2 | SKU1 |
+|---|---|---|---|
+| [Walker](skills/walker/README.md) | Walks in every direction and turns in place, rides out shoves; in simulation also on rough ground and the printed stairs | policy, recipes, evaluation; ran on the robot | recipe and evaluation in simulation; no policy yet |
+| [Get-up](skills/getup/README.md) | Gets up from any fall pose, with or without the lidar on the hood; switches with the walker on the robot | policy, recipes, evaluation; ran on the robot | recipe and evaluation in simulation; no policy yet |
 
-| Policy | What it does | Inputs | How it was made | Tested on |
-|---|---|---|---|---|
-| `policies/walker` | Stands, walks in every direction, climbs stairs, rides out shoves | 450 (10 frames × 45) | Fixed weights; the abductions' stand is 12° wider, which is what handles shoves | Robot (standing, 0.10 m/s forward) and simulation |
-| `policies/getup` | Gets up from the fall poses tested so far | 45 | Training recipe's steps, an earlier run | **Robot** and simulation |
-| `policies/getup_sim` | The same job, from the recipe as shipped (seed 41) | 45 | The training recipe | Simulation only |
+## Robots
 
-The two networks run separately. A program on the Raspberry Pi switches to the get-up on a detected fall and back to
-the walker once the robot stands.
+Every trainer, evaluator and the exporter take `--robot sku2|sku1` (default `sku2`; an evaluator defaults to the
+policy's own robot).
 
-## How the pieces fit
+- **SKU2:** the long body with a Raspberry Pi 5 and the 3S LiPo inside. The policies run on the Pi at 50 Hz and send
+  servo targets over UART to the ESP32 board: [the robot guide](skills/getup/docs/ROBOT_SKU2.md).
+- **SKU1:** the short body on the same legs, servos and board. Simulation only for now: running on the robot needs ESP32
+  firmware that is not yet released ([ROBOT_SKU1.md](skills/getup/docs/ROBOT_SKU1.md)).
 
-```mermaid
-flowchart TB
-  S["Searched open-loop motions<br/>data/searched_motions/"] --> C["Clone<br/>one network for every pose"]
-  C --> W["Widened limits, 1500 iterations<br/>hips and knees 60° past their limits"]
-  W --> L["Real limits, 1000 iterations<br/>action-rate and joint-speed costs"]
-  L --> F["Target filter, 253 iterations"]
-  F --> M["Smoothness loss, 1800 iterations"]
-  M --> G(["get-up policy"])
-  G --> R["Runner on the Raspberry Pi"]
-  B(["walker"]) --> R
-  R --> E["ESP32 firmware and servos"]
-  C0[/"checkpoints/clone.pt"/] -.-> W
-  C1[/"checkpoints/wide_1499.pt"/] -.-> L
-  C2[/"checkpoints/smooth3_3947.pt"/] -.-> M
+## Install
+
+```bash
+git clone https://github.com/mangdang-bam/mini_pupper_4_rl.git && cd mini_pupper_4_rl
+bash scripts/install/install.sh        # installs mp4-sim v0.2.0 too; see docs/INSTALL.md
 ```
 
-Dashed arrows are shortcuts: `START=checkpoints/clone.pt sh scripts/recipes/getup.sh` starts at the widened limits,
-`START=checkpoints/wide_1499.pt` at the real limits, and `START=checkpoints/smooth3_3947.pt` at the last 600 iterations of the
-smoothness loss.
+To install `mp4-sim` from elsewhere (a `mini_pupper_4_sim` checkout, or a pip URL such as
+`git+file:///path/to/mini_pupper_4_sim@v0.2.0`), set `MP4_SIM_SOURCE` for the installer.
 
-[docs/TRAINING.md](docs/TRAINING.md) explains why the recipe has these steps.
+Training and evaluation need an NVIDIA GPU; without one the installer picks CPU mode (policy checks, export, the runner
+on a simulated board, the CPU tests). The installer is for Linux and macOS; there is no Windows installer. Run the
+commands below from the repository root, without an inherited `PYTHONPATH` (`env -u PYTHONPATH` if your shell sets
+one).
 
-## On the robot
-
-```mermaid
-stateDiagram-v2
-  direction LR
-  [*] --> Walking
-  Walking --> GetUp: fall detected
-  GetUp --> GetUp: not up after the motion, retry
-  GetUp --> Walking: standing still
-  GetUp --> Limp: time out or get-up limit
-  Walking --> Limp: fault or stop
-  Limp --> [*]
-```
-
-The robot needs the [servo-link firmware](docs/ROBOT.md#firmware) with its get-up mode.
+Former name: mini_pupper_4_recovery (Python package `mp4_recovery`).
 
 ## Quick start
 
 ```bash
-git clone <this repository> && cd mini_pupper_4_recovery
-bash scripts/install/install.sh                       # 15-45 min, about 6.5 GB; see docs/INSTALL.md
-# Evaluation and training need an NVIDIA GPU; without one the installer picks CPU mode.
-.venv/bin/python -m pytest tests/cpu                  # about 5 min, no GPU needed
+# If your shell sets PYTHONPATH, run each command with `env -u PYTHONPATH` in front.
+CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest tests/cpu         # no GPU needed
 
-# Evaluate a get-up from every start (about 5 min)
-.venv/bin/python -m mp4_recovery.eval.getup_eval --policy policies/getup --seed 12 --robots 256 --seconds 8 \
-  --starts left,right,nose,back,midfall,crouch,random --motion --json runs/eval/getup.json
+# Check the shipped policies the way the robot does
+.venv/bin/python -m mp4_rl.getup.runner check --policy skills/walker/policies/sku2
+.venv/bin/python -m mp4_rl.getup.runner check --policy skills/getup/policies/sku2
 
-# The full sequence: walk, shove, fall, get up, walk, for 60 s (about 6 min)
-.venv/bin/python -m mp4_recovery.eval.sequence --walker policies/walker --getup policies/getup \
-  --schedule 0.5 1.5 2 4 --robots 256 --seconds 60 --seed 12 --getup-phase-restart 1.0 --json runs/eval/sequence.json
+# Evaluate in simulation (GPU): the get-up from every start, and walk, shove, fall, get up, walk for 60 s
+sh skills/getup/eval/sku2.sh runs/eval gflat_s21 seq_s21
+.venv/bin/python skills/getup/eval/score.py runs/eval
 
-# Train the get-up: about 12 h on an RTX 5080
-sh scripts/recipes/getup.sh
+# Fine-tune the get-up from its starting checkpoint and export the result
+sh skills/getup/recipes/sku2/finetune.sh
+.venv/bin/python -m mp4_rl.common.export runs/getup_finetune/<run>/model_<k>.pt runs/exports/getup
 
-# Put the policies on a Raspberry Pi and run them: see docs/ROBOT.md
-tools/deploy.sh user@pi walk   # walk: the folder on the Pi
+# Put the policies on the Raspberry Pi (ubuntu@PI: the Pi's user and address): see skills/getup/docs/ROBOT_SKU2.md
+tools/deploy.sh ubuntu@PI walk
 ```
 
-The result of a training run depends on its random seed. Compare runs with the sequence evaluation: it separates them
-better than success from a placed pose.
+On the robot one runner, `mp4_rl.getup.runner`, runs both policies: the walker, and the get-up when it detects a fall.
 
-## Results
+`tests/cpu/test_runner_modes.py` and the stream test in `tests/cpu/test_feedback.py` run robot-side code in real time
+against a simulated board: on a busy machine a timing assertion can fail; rerun the failed test alone. `tests/cpu` skips
+9 tests that need robot logs or an upstream checkout ([docs/INSTALL.md](docs/INSTALL.md#tests)).
 
-**Simulation.** 256 robots, the commands above with seeds 12 and 13 for the get-up, 12 and 15 for the sequence. The
-sequence kicks each robot at 0.5–1.5 m/s from any direction every 2–4 s.
+## Results on the robot
 
-| | `policies/getup` | `policies/getup_sim` |
+Measured on one SKU2 with `skills/walker/policies/sku2` and `skills/getup/policies/sku2`, each take one run of the
+runner; get-up times from the runner's log, speeds from the distance on a tape measure over the run's time, turn rates
+from the gyro:
+
+| | Takes | Result |
 |---|---|---|
-| Get-up success, every start | 99.2–100 % | 99.2–100 % |
-| Walking again within 8 s of a fall | 89.9, 84.7 % | 99.3, 100 % |
-| Robots that never got up, of 256 | 17, 26 | 2, 0 |
-| Back to walking, 90th percentile | 7.4, 7.6 s | 2.0, 2.1 s |
+| Get-ups from placed fall poses: back, left side, right side, nose down; then back and right side with the lidar | one per pose: 4, and 2 with the lidar | every one up, standing in 1.5-1.7 s |
+| Shoves by hand: standing (a 40 s run), and walking at 0.10 m/s (a 15 s run) | 2 runs, 6 shoves | every get-up the run's time allowed (5): up again in 1.4-1.7 s |
+| Walking forward (0.10, 0.20 m/s), backward (0.10) and sideways (0.10, 0.20) | 7 | 0.69-0.91 × the speed simulation predicts for the same command (sideways the slowest), no falls |
+| Turning in place at ±0.5, +1.0 and ±2.0 rad/s | 5 | 0.81-0.90 × the simulated turn rate; up to 1.71 rad/s and -1.83 rad/s at a ±2.0 rad/s command |
+| Walking at 0.10 m/s while turning at 0.5 rad/s | 1 | about two thirds of the simulated turn (0.67 ×) |
 
-The evaluation differs by 1–3 points between identical runs. Get-up success starts from placed poses with nothing else
-happening; walking again is measured in the sequence, where kicks keep landing during a recovery and there is a time limit.
+No run logs are published. Simulation result tables are not published here either; each skill's README gives the
+commands that produce them.
 
-**The walker** in simulation (seed 12):
+## What isn't supported yet
 
-| Check | Result |
-|---|---|
-| Shoves standing, falls at 0.75 / 1.0 / 1.25 / 1.5 m/s | 0 / 2.1 / 12.3 / 16.0 % |
-| Shoves walking, falls at 0.75 / 1.0 / 1.25 / 1.5 m/s | 0 / 0.9 / 13.3 / 23.7 % |
-| 20 walking and turning commands | no falls |
-| Four 25 mm stairs / eight 25 mm stairs | 98.8 / 95.7 % reach the top |
-| Rough ground, eight kinds, 256 trials | 96.5 % (box obstacles 87.9 %, raised relief 86.7 %) |
-
-**One real robot, by hand** with `policies/getup` and `policies/walker`. `tools/summarise_runs.py` makes this table from a
-robot's run logs:
-
-| | Get-ups | Up first time | Retried | Run ended first | Never rose |
-|---|---|---|---|---|---|
-| Placed: back, either side, nose down | 8 | 7 | 1 | 0 | 0 |
-| Falls from hand shoves | 19 | 15 | 0 | 3 | 1 |
-
-Median time to walking was 2.1 s after a fall, with current peaks up to 3.15 A.
+- SKU1 policies and running anything on the SKU1 (it needs ESP32 firmware that is not yet released).
+- The printed stairs and rough ground are tested in simulation only, not on the robot.
+- The runner's reading of the calibration from each policy folder has been tested on a simulated board, not yet on the
+  robot ([the robot guide](skills/getup/docs/ROBOT_SKU2.md#known-limitations)).
+- The shipped calibration and joint limits belong to one robot of each kind: another unit needs its own calibration
+  ([the robot guide](skills/getup/docs/ROBOT_SKU2.md#adapting-to-another-unit)).
 
 ## What is where
 
 ```
-policies/          the shipped policies
-checkpoints/       training states to start a recipe step from
-data/              searched motions, stair layouts
-scripts/           installer, get-up and walker recipes
-src/mp4_recovery/
-  gpu/             training: get-up task, PPO with the smoothness loss, cloning, motion search
-  eval/            get-up, full sequence, thresholds, shoves, walking, terrain
-  deploy/          the runner and the serial link; numpy and pyserial only
-  export_policy.py checkpoint to policy
-  robot/, actuators/  the robot model and the fitted servo model
-tools/             deploy, stop, stream playback, contract for another unit, run summaries, robot-versus-simulation
+skills/walker/     recipes/{sku2,sku1}/, policies/{sku2,sku1}/, checkpoints/sku2/ (start and final), eval/
+skills/getup/      the same, and docs/ (running the policies on the robot)
+src/mp4_rl/
+  common/          the policy interface (numpy), decoder bounds, export, the base environment on mp4_sim's scene,
+                   PPO with the smoothness losses and the anchor, the classic gait baseline
+  walker/          the walker's task, training terrain, trainer and evaluations (omni, push, terrain)
+  getup/           the get-up's task, trainer and evaluations (get-up, sequence); runner/ and mp4link/: the robot side,
+                   numpy and pyserial only
+tools/             deploy, stop, lifted playback, calibration and joint limits for another unit, run summaries,
+                   robot-versus-simulation
+scripts/install/   the installer and its checks
 tests/             cpu/ needs no GPU, gpu/ 5-15 min
-docs/              INSTALL, TRAINING, ROBOT, POLICY_CONTRACT
+docs/              INSTALL, POLICY_CONTRACT
 ```

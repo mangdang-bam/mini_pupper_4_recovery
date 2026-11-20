@@ -1,7 +1,7 @@
 """``--widen-limits-deg``: hip and knee targets past the track ends, recorded in the bounds so an evaluation keeps it."""
 import numpy as np
 
-from mp4_recovery import limits as L
+from mp4_rl.common import bounds as L
 
 
 def test_widening_moves_only_the_track_margin():

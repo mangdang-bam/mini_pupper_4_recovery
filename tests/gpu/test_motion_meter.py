@@ -1,15 +1,14 @@
 """eval/motion_meter.py: the reversal count, the band power shares, the windows and the summaries on synthetic
 series (CPU), then the meter on the GPU: a scripted sinusoidal target on robots left on their backs gives the expected
-reversal rate, the impact hook reads forces and detaches, and getup_eval / getup_search carry the motion block."""
+reversal rate, the impact hook reads forces and detaches, and getup_eval carries the motion block."""
 import math
 
 import numpy as np
 import pytest
 import torch
 
+from mp4_rl.getup.eval import motion_meter as M  # noqa: E402
 
-
-from mp4_recovery.eval import motion_meter as M  # noqa: E402
 DT = M.DT
 
 
@@ -125,8 +124,9 @@ def test_impact_windows():
 # ------------------------------------------------------------------------------------------------------------- GPU
 def _env(n, seed=3):
     from mjlab.envs import ManagerBasedRlEnv
-    from mp4_recovery.gpu.env_cfg import noise_profile
-    from mp4_recovery.gpu.getup_task import GetupOptions, make_getup_env_cfg
+
+    from mp4_rl.common.env import noise_profile
+    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
     opt = GetupOptions(num_envs=n, noise_end=noise_profile(), band_deg=(90.0, 180.0, 180.0),
                        limits=True, fixed_starts=("random",), episode_s=1.0e3)
     cfg = make_getup_env_cfg(opt)
@@ -138,8 +138,8 @@ def test_meter_on_robots_on_their_backs():
     """Robots on their backs with a 3 Hz, +-12 deg sinusoidal target on every servo never come up: the whole trial is
     the get-up window, the reversal rate 2 x 3 per s at 5 and 10 deg, the target-change cost is the decoder's applied
     actions'; the base rests on the floor (its weight-scale force), and detach restores the physics step."""
-    from mp4_recovery.gpu import mdp
-    from mp4_recovery.eval import getup_eval as ev
+    from mp4_rl.common import mdp
+    from mp4_rl.getup.eval import getup_eval as ev
     n, f, steps = 8, 3.0, 150
     env = _env(n)
     act = mdp.servo_action(env)
@@ -173,11 +173,9 @@ def test_meter_on_robots_on_their_backs():
     assert t["abd_limit_peak_Nm"]["n"] == n and t["abd_limit_peak_Nm"]["max"] >= 0.0
 
 
-def test_getup_eval_and_search_carry_the_motion_block():
-    """run_start(meter=...) puts the motion summary into the start's summary and per-trial arrays of length n;
-    getup_search.evaluate feeds a meter the same way."""
-    from mp4_recovery.eval import getup_eval as ev
-    from mp4_recovery.gpu import getup_search as gs
+def test_getup_eval_carries_the_motion_block():
+    """run_start(meter=...) puts the motion summary into the start's summary and per-trial arrays of length n."""
+    from mp4_rl.getup.eval import getup_eval as ev
     n = 4
     env = _env(n)
     meter = M.MotionMeter(env)
@@ -185,10 +183,19 @@ def test_getup_eval_and_search_carry_the_motion_block():
     r = ev.run_start(env, pol, "left", 1.0, 3, meter=meter)
     assert set(r["summary"]["motion"]) >= {"getup", "after", "trial", "window_steps"}
     assert len(r["trials"]["motion"]["getup.rev5"]) == n and len(r["trials"]["success"]) == n
-    x = torch.zeros(1, 5 * 13)
-    x[0, 60:] = 0.3
-    out = gs.evaluate(env, x.cuda(), 5, "left", n, 3, meter=meter, trial_s=1.0)
-    m = meter.finish(out["t_success"].reshape(-1))
     meter.detach()
     env.close()
-    assert m["summary"]["getup"]["rev5"]["n"] == n
+
+
+def test_getup_eval_feeds_the_reach_meter():
+    """run_start(reach=...) measures every robot at every step after the spawn's drop, in the proven reach's terms."""
+    from mp4_rl.getup.eval import getup_eval as ev
+    from mp4_rl.getup.eval import reach
+    env = _env(4)
+    meter = reach.ReachMeter()
+    pol = lambda obs: torch.zeros(obs.shape[0], 12, device=obs.device)       # noqa: E731
+    ev.run_start(env, pol, "left", 1.0, 3, reach=meter)
+    env.close()
+    assert len(meter.samples["commanded"]) == 25 and meter.samples["measured"][0].shape == (4, 4, 2)
+    rep = meter.report()
+    assert all(abs(r["commanded_peak_deg"]) < 20.0 for r in rep["legs"].values())     # the policy asks for the stand

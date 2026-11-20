@@ -1,12 +1,13 @@
 """The numpy policy reproduces the torch actor (the export the robot runs)."""
 import numpy as np
 
-from mp4_recovery.policy_file import NumpyPolicy, export
+from mp4_rl.common.policy_file import NumpyPolicy, export
 
 
 def test_numpy_equals_torch(tmp_path):
     import torch
-    from mp4_recovery.gpu.actor import mlp
+
+    from mp4_rl.common.actor import mlp
     net = mlp(45, 12, (128, 128, 64))
     sd = {f"mlp.{k}": v for k, v in net.state_dict().items()}
     sd["distribution.std_param"] = torch.full((12,), 0.1)
@@ -27,10 +28,12 @@ def test_band_and_kind_meta_round_trip(tmp_path):
     """The export writes the policy's kind and band (12 floats); the runner's reading gives them back, and the
     default is the walking band, kind walk."""
     import json
+
     import pytest
     import torch
-    from mp4_recovery.contract import BAND_DEG, policy_band_deg, policy_kind
-    from mp4_recovery.gpu.actor import mlp
+
+    from mp4_rl.common.actor import mlp
+    from mp4_rl.common.policy import BAND_DEG, policy_band_deg, policy_kind
     sd = {f"mlp.{k}": v for k, v in mlp(45, 12, (64, 32)).state_dict().items()}
     ck = tmp_path / "m.pt"
     torch.save({"actor_state_dict": sd}, ck)
@@ -48,7 +51,8 @@ def test_getup_phase_meta(tmp_path):
     """A phased get-up exports meta ``getup_phase_s``; an unphased one has none; a walker cannot carry it."""
     import pytest
     import torch
-    from mp4_recovery.gpu.actor import mlp
+
+    from mp4_rl.common.actor import mlp
     sd = {f"mlp.{k}": v for k, v in mlp(45, 12, (64, 32)).state_dict().items()}
     ck = tmp_path / "m.pt"
     torch.save({"actor_state_dict": sd}, ck)

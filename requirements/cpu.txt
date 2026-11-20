@@ -1,8 +1,9 @@
-# CPU mode: policy checks, the runner and the tests in tests/cpu.
-# Versions come from constraints.txt.
+# CPU mode: policy checks and export, the runner on a simulated board, and the tests in tests/cpu. mp4-sim (the robot's
+# model and measured data) is installed by scripts/install/ from its pinned release. Versions come from constraints.txt.
 
 numpy
 scipy
 pyserial
+mujoco
 torch
 pytest

@@ -1,18 +1,21 @@
-# Policy contract
+# The policy interface
 
-What a policy observes and what its output does on a Mini Pupper v4 SKU2. `src/mp4_recovery/contract.py` is the reference
+What a policy observes and what its output does on a Mini Pupper v4. The interface is the same for the SKU2 and the SKU1;
+the shipped policies and the runner are the SKU2's. `src/mp4_rl/common/policy.py` (with `mp4_sim.calibration`) is the reference
 implementation (numpy only, imported by the runner on the Pi); the training environment implements the same arithmetic in
-torch (`gpu/mdp.py`), and `tests/` checks that the two agree. If the contract changes, this document, `contract.py` and the
+torch (`common/mdp.py`), and `tests/` checks that the two agree. If the interface changes, this document, `common/policy.py` and the
 exporter change together.
 
-The per-robot numbers (servo signs, stand pose, calibration offsets) live in `src/mp4_recovery/data/sku2_contract.json`.
+The per-robot numbers (servo signs, stand pose, calibration offsets) live in the calibration file, `sku2_contract.json`
+(`mp4_sim`'s SKU2 measured data; each policy folder carries a copy). That file's name, the meta key `contract_sha256`
+(its hash) and the export's `--contract` option all mean the calibration file.
 
-`python -m mp4_recovery.deploy.runner check --policy policies/<name>` checks an exported policy against this document (see
+`.venv/bin/python -m mp4_rl.getup.runner check --policy skills/<name>/policies/sku2` checks an exported policy against this document (see
 [Checking a policy](#checking-a-policy)).
 
 ## The two policies
 
-| | `policies/walker` | `policies/getup` |
+| | `skills/walker/policies/sku2` | `skills/getup/policies/sku2` |
 |---|---|---|
 | Meta `kind` | `walk` | `getup` |
 | Inputs | 450 (10 frames, history 10) | 45 (1 frame, history 0) |
@@ -22,10 +25,15 @@ The per-robot numbers (servo signs, stand pose, calibration offsets) live in `sr
 | Band about the stand, deg | 20, 60, 60 | 90, 180, 180 |
 | Abduction stand offset, deg outward | 12 | 0 |
 | Target filter α | none | 0.75 |
-
 | Decoder bounds mode | `walk` | `getup`, with a hip envelope |
+| Servo model (`actuator`) | `md300` | `md300` |
+| Robot model (`legs`) | `sku_2`, 5.5 mm sphere feet | `sku_2`, 5.5 mm sphere feet |
 
-`policies/getup_sim` has the same layout as `policies/getup`.
+The servos: each leg is one MangDang 3-in-1 servo module (abduction, hip and knee), sold as MD-300-150 (MD-300 for short;
+the firmware and older documents call it MD01). Two fits of its model ship in `mp4_sim` (`actuators/params/`):
+`md300_id_{1,2,3}_m6.json`, one per output, is the `md300` model the shipped policies and the evaluation use (m6 is the
+[BAM](https://github.com/Rhoban/bam) friction model it is fitted with: Stribeck, load-dependent, directional and quadratic
+terms); `bam_t5ub06_id_{2,3}_m6.json` (in `params/md01/`) is an earlier fit, kept as the option `--actuator md01`.
 
 Both run at 50 Hz (`CONTROL_DT = 0.02`). The robot reports state every 5 ms, and one policy step is 4 STATE frames, locked to the
 ESP32's clock.
@@ -111,7 +119,7 @@ frames from oldest to newest.
 | `210:330` | `vel` | `318:330` |
 | `330:450` | `prev_action` | `438:450` |
 
-After a reset the first frame fills all 10 slots (`contract.HistoryStacker`).
+After a reset the first frame fills all 10 slots (`policy.HistoryStacker`).
 
 The command's `wz` comes from the runner's heading loop while no turn is commanded (`heading.pi_step`: `kp 2.0`, `ki 0.5`, `wz_max 0.4`
 rad/s, `i_max 0.5`, conditional integration). A commanded turn is sent alone. The heading is the gyro's rate about the low-passed
@@ -131,7 +139,7 @@ its end for 1 s and the filtered tilt is still above 45°. That's a runner rule;
 
 ## Action (12 values)
 
-The decoder (`contract.ActionDecoder`), in order:
+The decoder (`policy.ActionDecoder`), in order:
 
 ```
 a    = clip(output, -1, 1)
@@ -167,25 +175,25 @@ calibrated stand's.
 
 ### Joint bounds
 
-Meta `bounds` holds per servo a lower and an upper target, in the model's coordinates (contract `stand_policy_rad` + `rel`). From the
+Meta `bounds` holds per servo a lower and an upper target, in the model's coordinates (the calibration's `stand_policy_rad` + `rel`). From the
 stand, in degrees:
 
 | Servo | Walker | Get-up |
 |---|---|---|
-| FR abduction | −18.6 to 20.0 | −19.6 to 21.3 |
-| FL abduction | −20.0 to 10.8 | −23.9 to 11.8 |
-| RR abduction | −20.0 to 10.8 | −21.6 to 11.8 |
-| RL abduction | −13.9 to 20.0 | −14.9 to 26.2 |
-| FR hip | −142.7 to 127.3 | same |
-| FL hip | −98.7 to 171.3 | same |
-| RR hip | −159.7 to 110.3 | same |
-| RL hip | −141.7 to 128.3 | same |
-| FR knee | −151.3 to 118.7 | same |
-| FL knee | −92.7 to 177.3 | same |
-| RR knee | −131.3 to 138.7 | same |
-| RL knee | −153.7 to 116.3 | same |
+| FR abduction | −19.2 to 20.0 | −20.2 to 26.5 |
+| FL abduction | −20.0 to 20.0 | −29.0 to 21.0 |
+| RR abduction | −20.0 to 16.6 | −27.3 to 17.6 |
+| RL abduction | −17.8 to 20.0 | −18.8 to 23.1 |
+| FR hip | −213.7 to 56.3 | same |
+| FL hip | −30.7 to 239.3 | same |
+| RR hip | −170.7 to 99.3 | same |
+| RL hip | −135.7 to 134.3 | same |
+| FR knee | −129.3 to 140.7 | same |
+| FL knee | −72.7 to 197.3 | same |
+| RR knee | −140.3 to 129.7 | same |
+| RL knee | −159.7 to 110.3 | same |
 
-- **Abductions:** one unit's measured range, less a margin (`limits.py`): 3° for the walker, capped at 20° outward, and 2° for the get-up.
+- **Abductions:** one unit's measured range, less a margin (`common/bounds.py`): 3° for the walker, capped at 20° outward, and 2° for the get-up.
 - **Hips and knees:** 20° inside the potentiometer's track ends (0 and 3100 dd), since positions in the dead zone beyond them can't
   be read. These depend on the calibration: a recalibrated robot needs a re-export.
 - **Knee coupling:** the knee servo is also clamped so that the knee-thigh angle (the `*_calf` joint) stays inside `calf_range` given the
@@ -193,7 +201,8 @@ stand, in degrees:
 - **Hip envelope** (`hip_envelope`, get-up only): per leg the hip target's range as a piecewise-linear function of the abduction target,
   since near either abduction extreme the chassis stops the thigh swinging towards the body's middle.
 
-`bounds.info.contract_stand_dd` records the stand the bounds were made for.
+`bounds.info.contract_stand_dd` records the stand the bounds were made for, and `bounds.info.limits_sha256` the joint-limits
+file they came from (`sku2_joint_limits.json`, `9cad8e76…` for the shipped policies).
 
 ## Meta
 
@@ -202,7 +211,9 @@ JSON in `policy.npz`. The runner reads:
 | Key | Meaning |
 |---|---|
 | `kind` | `walk` or `getup`; absent means `walk` |
-| `contract_sha256` | SHA-256 of the contract file the policy was exported for |
+| `contract_sha256` | SHA-256 of the calibration file the policy was exported for (`86f1d330…` for the shipped policies) |
+| `actuator` | the servo model it was trained on; must be `md300` |
+| `legs` | the robot model it was trained on: leg set `sku_2`, foot `sphere` of 0.0055 m, and the model file's `model_sha256`, which must match `robot/assets/sku_2/pupper.xml` (`45531647…`) |
 | `omni` | the policy observes the whole command; required on the walker |
 | `history` | frames observed; 0 and 1 both mean one frame |
 | `band_deg` | the 12 bands; absent means 20 on abductions, 60 on hips and knees |
@@ -211,28 +222,36 @@ JSON in `policy.npz`. The runner reads:
 | `action_filter_alpha` | the target filter; absent means 0 |
 | `getup_phase_s` | the phase clock's length; required on the get-up |
 
-`limits`, `activation`, `obs`, `hidden`, `obs_normalizer`, `privileged`, `tested`, `checkpoint_sha256` and `source_policy_sha256` describe where the
-policy came from; the runner doesn't need them. No value is a path on anyone's machine.
+`limits`, `activation`, `obs`, `hidden`, `obs_normalizer` (the get-up), `checkpoint_sha256` and `source_policy_sha256` describe where
+the policy came from; the runner doesn't need them. A policy exported for the SKU1 (`--robot sku1`) also has `robot`
+(`sku1`, and in its `legs` block), its `contract_sha256` and `bounds` are the SKU1's, and its folder carries
+`sku1_contract.json` and `sku1_joint_limits.json`; the runner refuses it (the SKU2's model hash). `leg_leg_contacts` and
+`display_collision`, present only when true, record contact options the policy was trained with; the evaluators take them
+as their default. `legs` also records the model's geometry and its path inside the package; the
+runner compares the names and the hash, never the path. No value is a path on anyone's machine.
 
 ## Checking a policy
 
 ```sh
-python -m mp4_recovery.deploy.runner check --policy policies/getup
+.venv/bin/python -m mp4_rl.getup.runner check --policy skills/getup/policies/sku2
 ```
 
 Needs no robot and no port. It checks:
 
 - **Fixtures:** `fixture_obs` through the numpy forward pass against `fixture_act`, within 1e-5 × the largest output (at least 1e-5), under this machine's numpy. Run it on
   the Pi too: `tools/deploy.sh` does.
-- **Contract:** `contract_sha256` is the contract file's hash, or that of a calibration the contract lists under
-  `calibrations_superseded` (`tools/make_contract.py` adds the one it replaces).
+- **Calibration:** the policy's folder carries one calibration file (`sku2_contract.json`), and `contract_sha256` is its
+  hash, or that of a calibration it lists under `earlier_calibrations` (`tools/make_contract.py` adds the one it
+  replaces). The runner reads the calibration from the folder, nowhere else.
+- **Robot:** `actuator` and `legs` name this robot: the servo model, leg set, foot and model file (by its hash).
 - **Inputs:** the first layer's width is `45 × max(history, 1)`, and the policy observes no term the runner doesn't feed.
 - **Band and bounds:** the band is at most 90° (180° for a get-up policy with bounds), a walker's at most the walking band, and
-  `contract_stand_dd` equals the contract's stand.
+  `contract_stand_dd` equals the calibration's stand.
 - **Decoder self-test:** 400 steps of saturated and random actions, from extreme measured poses, give targets inside the bounds and at
   least 15° from the track ends.
 
-`runner run` repeats the band, layout and self-test checks before arming, and checks each target before sending it.
+`runner run` repeats the calibration, robot, band, layout and self-test checks before arming, refuses a walker and a
+get-up whose folders carry different calibrations, and checks each target before sending it.
 
-`tools/make_contract.py` writes a contract for a recalibrated robot, and `export_policy --from-policy` writes a policy's
-bounds for it: see [ROBOT.md](ROBOT.md#adapting-to-another-unit).
+`tools/make_contract.py` writes a calibration file for a recalibrated robot, and `.venv/bin/python -m mp4_rl.common.export --from-policy
+DIR OUT --contract FILE` writes a policy's bounds for it, with the calibration in its folder: see [ROBOT_SKU2.md](../skills/getup/docs/ROBOT_SKU2.md#adapting-to-another-unit).

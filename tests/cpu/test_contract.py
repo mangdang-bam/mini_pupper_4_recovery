@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from mp4_recovery.contract import (DD0, ActionDecoder, Contract, VelocityFilter, STEP_LIMIT_DEG)
+from mp4_rl.common.policy import DD0, STEP_LIMIT_DEG, ActionDecoder, Contract, VelocityFilter
 
 C = Contract.load()
 
