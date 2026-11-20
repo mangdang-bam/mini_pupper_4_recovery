@@ -3,22 +3,44 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mp4-recovery"
-version = "0.1.0"
-description = "Fall recovery for the Mini Pupper v4: get-up training, evaluation and deployment"
+name = "mp4-rl"
+version = "0.2.0"
+description = "Reinforcement-learning skills for the Mini Pupper v4: walker and get-up training, evaluation and deployment"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
-# Shared by both modes. Backend-specific packages and every version pin live
-# in requirements/ and are installed by scripts/install/.
+# The robot side (the runner on the Raspberry Pi) needs numpy only, and pyserial for the servo link. Training and
+# evaluation need the simulation (mini_pupper_4_sim) and its GPU stack; every version pin lives in requirements/ and is
+# applied by scripts/install/.
 dependencies = [
     "numpy",
-    "torch",
 ]
 
+[project.optional-dependencies]
+pi = [
+    "pyserial",
+]
+gpu = [
+    "mp4-sim @ git+https://github.com/mangdangroboticsclub/mini_pupper_4_sim.git@v0.2.0",
+    "mjlab",
+    "mujoco",
+    "mujoco-warp",
+    "warp-lang",
+    "rsl-rl-lib",
+    "torch",
+    "tensorboard",
+    "scipy",
+    "pyserial",
+    "imageio",
+    "imageio-ffmpeg",
+    "pillow",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mp4_recovery"]
+packages = ["src/mp4_rl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -28,12 +50,10 @@ addopts = "-q"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# Vendored upstream code; kept diffable against its source.
-extend-exclude = ["src/mp4_recovery/actuators/bam"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
-# Physics notation (I for inertia, l for link).
+# Single-letter array names such as O are allowed in the tools.
 "tools/*" = ["E741"]
