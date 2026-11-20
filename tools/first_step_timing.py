@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def child(mode: str, port: str, log: str) -> int:
-    from mp4_recovery.deploy import runner as rn
+    from mp4_rl.getup.runner import runner as rn
     rn.HOLD_AFTER_S = 0.1
     if mode == "plain":
         rn.Runner.warm_up = lambda *a, **k: None
@@ -39,11 +39,12 @@ def first_call_report() -> str:
 
 def one_start(mode: str, tmp: Path, n: int) -> dict:
     import numpy as np
-
     from fake_esp32 import FakeRobot
-    from mp4_recovery.contract import Contract
-    from mp4_recovery.deploy import runner as rn
-    board = FakeRobot(Contract.load(), rn.load_mount()[1], rn.IDENTIFIED)
+
+    from mp4_rl.common.policy import Contract
+    from mp4_rl.getup.runner import runner as rn
+    cal = ROOT / "skills" / "walker" / "policies" / "sku2" / "sku2_contract.json"     # the default policies' calibration
+    board = FakeRobot(Contract.load(cal), rn.load_mount()[1], rn.IDENTIFIED)
     log = tmp / f"{mode}_{n}"
     p = subprocess.run([sys.executable, "-B", __file__, "--child", mode, board.port, str(log)], capture_output=True, text=True)
     tripped = bool(board.latched & rn.p.ST_WATCHDOG)

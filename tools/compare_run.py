@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Compare a real robot run with the simulation, within a minute or two per run.
 
-    python tools/compare_run.py stream LOG.npz --stream FILE.npz --policy policies/getup [--slow] [--json OUT]
-    python tools/compare_run.py floor  RUN_PREFIX --policy policies/getup [--robots 64] [--json OUT]
-    python tools/compare_run.py obs    RUN_PREFIX --policy policies/getup [--json OUT]
-    python tools/compare_run.py predict --stream FILE.npz --policy policies/getup [--cap 2000] [--json OUT]
+    .venv/bin/python tools/compare_run.py stream LOG.npz --stream FILE.npz --policy skills/getup/policies/sku2 [--slow] [--json OUT]
+    .venv/bin/python tools/compare_run.py floor  RUN_PREFIX --policy skills/getup/policies/sku2 [--robots 64] [--json OUT]
+    .venv/bin/python tools/compare_run.py obs    RUN_PREFIX --policy skills/getup/policies/sku2 [--json OUT]
+    .venv/bin/python tools/compare_run.py predict --stream FILE.npz --policy skills/getup/policies/sku2 [--cap 2000] [--json OUT]
 
 Exit code: 0 clean / pass, 1 a failed check, 2 refused. A policy's ``config.json`` gives the plant (``getup_eval.build``:
 noise at its end amplitudes, friction, center of mass, mass and command delay randomised; contact softness is the run's fixed
@@ -13,7 +13,8 @@ noise at its end amplitudes, friction, center of mass, mass and command delay ra
 ``stream``: the log of ``mp4link stream --log``. What the robot actually sent (``sent_pos_dd``: the ramp from where the
 legs were, the hold on the first frame, the frames as clipped, the ramp back; zero-order held on the 20 ms grid at its
 ``sent_t``, so gaps stay gaps) replayed in ``--robots`` (16) simulated robots, base held still 1 m up (feet touch nothing),
-from the logged first pose, BAM plant, the log's frame cap (mode 1: duty <= kff x cap, kff 0.001). ``--stream`` is the
+from the logged first pose, BAM plant, the log's frame cap (mode 1: duty <= scale x cap, the firmware's duty per mA: kff
+0.001 for md01, pwm_scale 0.001 for md300). ``--stream`` is the
 file played: the log's sends are checked against it (a wrong file shows). Over the playback (``t_play``), per joint group
 and servo: error = |target sent at t - position at t + 20 ms| (the same function on robot and sim) p50/p95; delay by cross-correlation of target and position; current p50/p99/peak and the robot/sim
 ratio. Pass: robot p95 <= 2 x sim + 5 deg (25 % speed, ``--slow`` or ``x0p25`` in the file name: p95 <= 15 deg); housing
@@ -37,6 +38,12 @@ against the 0.05-99.95 % range of a rollout from the same start kind; independen
 starts from the logged gravity and a sign error would carry into it: the raw accelerometer through the mounting, the
 filtered tilt the step decided on, upright must read g_z ~ -1, and per axis dg/dt = -w x g (catches a one-axis flip).
 
+``--actuator md01|md300``: the simulated servo model (default: the policy's meta's, else md300); every result names it.
+The plant, every mode: ``--legs`` (``--foot``, ``--foot-radius``), ``--masses-json FILE``, the supply and winding
+randomisation (``--supply-v LO HI``, ``--supply-drop-ohm LO HI``, ``--r-scale LO HI``); unset, the policy's meta's, else
+its run's options. Every result records the flags (``plant_flags``) and what the built env holds (``built_env``: total
+mass, masses file, legs, servo model, contract and limits files), and prints the latter in one line.
+
 Limits: robot currents are the servo's reading, sim's BAM |tau|/kt at the 5 ms sample; simulated tilt is the true one,
 not the complementary filter; the simulation has no gear backlash or wear and no stand's compliance under the base; a floor
 start from rest cannot reproduce a mid-fall entry's momentum.
@@ -52,14 +59,15 @@ from pathlib import Path
 
 import numpy as np
 
-from mp4_recovery.contract import Contract, stand_offset_rel
+from mp4_rl.common.policy import Contract, stand_offset_rel
 
 STEP = 0.02
 SAMPLE = 0.005
 LAG = 0.02                  # the tracking error's one control step
 GROUPS = {"abduction": [0, 3, 6, 9], "hip": [1, 4, 7, 10], "knee": [2, 5, 8, 11]}
 NAMES = [f"{leg}_{j}" for leg in ("FR", "FL", "RR", "RL") for j in ("abd", "hip", "knee")]
-KFF = 0.001                 # runner.IDENTIFIED: mode 1's duty cap = kff x the frame's cap (mA)
+# mode 1's duty cap = the firmware's duty per mA (md01: kff_current, runner.IDENTIFIED; md300: pwm_scale) x the frame's
+# cap (mA): actuators.choice.duty_per_ma
 SLOW_P95_DEG, RISE_MAX_C, RATIO_FLAG = 15.0, 5.0, 2.0
 FILE_DIFF_MAX_DD = 10.0   # rounding and the odd clipped send; more means another file, or clipping that matters
 ST_GETUP = 1 << 9
@@ -76,7 +84,7 @@ OBS_RANGE_MARGIN = 0.05     # ... the sim's range widened by this share of its w
 # ---- pure arithmetic ------------------------------------------------------------------------------------------------
 def rel_deg_from_dd(dd, stand_dd, signs) -> np.ndarray:
     """dd (a target or a reading) in the policy's coordinates about the stand, deg: rel = sign * servo_deg and
-    servo_deg falls as dd rises (contract.rel_from_dd, about the log's own stand)."""
+    servo_deg falls as dd rises (Contract.rel_from_dd, about the log's own stand)."""
     return -np.asarray(signs, float) * (np.asarray(dd, float) - np.asarray(stand_dd, float)) / 10.0
 
 
@@ -422,7 +430,8 @@ class Rig:
 
     def __init__(self, env):
         import warp as wp
-        from mp4_recovery.gpu.mdp import servo_action
+
+        from mp4_rl.common.mdp import servo_action
         self.env, self.wp = env, wp
         self.term = servo_action(env)
         self.count, self.hold = 0, None
@@ -449,7 +458,7 @@ class Rig:
             self.wp.to_torch(d.qvel)[:, :6] = 0.0
         self.count += 1
         if self.count % self.every == 0:
-            from mp4_recovery.eval.terrain_eval import bam_currents
+            from mp4_rl.walker.eval.terrain import bam_currents
             r = self.env.scene["robot"].data
             self.t.append(self.count * float(self.env.sim.mj_model.opt.timestep))
             self.pos.append(self.phys_rel().cpu().numpy())
@@ -463,28 +472,62 @@ class Rig:
                 "grav": np.stack(self.grav), "gyro": np.stack(self.gyro)}
 
 
-def set_duty_cap(env, cap_ma: int) -> float:
-    """The frame cap, mode 1: duty <= min(max_pwm, kff x cap), on every BAM actuator's model."""
+def set_duty_cap(env, cap_ma: int, actuator: str = "md300") -> float:
+    """The frame cap, mode 1: duty <= min(max_pwm, scale x cap), on every BAM actuator's model; scale the firmware's
+    duty per mA (``choice.duty_per_ma``: kff_current for md01, pwm_scale for md300)."""
+    from mp4_sim.actuators.choice import duty_per_ma
+    scale = duty_per_ma(actuator)
     duty = None
     for act in env.scene["robot"]._actuators:
         model = getattr(act, "_bam_model", None)
         if model is not None:
-            model.actuator.max_pwm = min(float(model.actuator.max_pwm), KFF * float(cap_ma))
+            model.actuator.max_pwm = min(float(model.actuator.max_pwm), scale * float(cap_ma))
             duty = float(model.actuator.max_pwm)
     return duty
 
 
-def sim_held(pdir, rows_rel_deg, start_rel_deg, cap_ma: int, robots: int, seed: int, device: str) -> dict:
+def servo_flags(actuator: str | None) -> dict | None:
+    return None if actuator is None else {"actuator": actuator}
+
+
+def plant_of(a) -> dict:
+    """The plant flags of a mode's namespace (``ge.build``'s ``actuator``, ``legs``, ``masses_json``): the servo model
+    and its supply / winding randomisation (``--actuator``, ``--supply-v``, ``--supply-drop-ohm``, ``--r-scale``), the
+    legs (``--legs``, ``--foot``, ``--foot-radius``), the masses file (``--masses-json``). Unset flags: the policy's meta,
+    else its run's options, as ``getup_eval.build`` resolves them."""
+    from mp4_sim.actuators import choice as servo_model
+
+    from mp4_rl.common.bounds import legs_flags
+    return {"actuator": servo_model.options_from_args(a), "legs": legs_flags(a),
+            "masses_json": getattr(a, "masses_json", None)}
+
+
+def _build(pdir, robots: int, seed: int, device: str, plant: dict | None):
+    """``getup_eval.build`` with the plant flags; returns (env, opt, the built env's record)."""
+    from mp4_rl.common import built_env
+    from mp4_rl.getup.eval import getup_eval as ge
+    plant = plant or {}
+    env, opt = ge.build(Path(pdir), robots, seed, device=device, actuator=plant.get("actuator") or None,
+                        legs=plant.get("legs") or None, masses_json=plant.get("masses_json"))
+    rec = built_env.record(env, opt)
+    print("built env:", built_env.line(rec), flush=True)
+    return env, opt, rec
+
+
+def sim_held(pdir, rows_rel_deg, start_rel_deg, cap_ma: int, robots: int, seed: int, device: str,
+             actuator: str | None = None, plant: dict | None = None) -> dict:
     """The targets (F, 12) rel deg, one per 20 ms, on robots whose base is held still 1 m up. Returns the 5 ms samples
-    (t from the first target, pos_deg (T, n, 12), cur_a (T, n, 12)), and the duty cap."""
+    (t from the first target, pos_deg (T, n, 12), cur_a (T, n, 12)), the duty cap and the built env's record.
+    ``plant``: ``plant_of``'s flags (``actuator``: the servo model alone, when no ``plant``)."""
     import torch
     import warp as wp
-    from mp4_recovery.eval import getup_eval as ge
 
-    env, _ = ge.build(Path(pdir), robots, seed, device=device)
+    from mp4_rl.getup.eval import getup_eval as ge
+
+    env, opt, built = _build(pdir, robots, seed, device, plant if plant is not None else {"actuator": servo_flags(actuator)})
     rig = Rig(env)
     term = rig.term
-    duty = set_duty_cap(env, cap_ma)
+    duty = set_duty_cap(env, cap_ma, opt.actuator)
     ge.set_start(env, "left")
     torch.manual_seed(seed)
     env.reset()
@@ -520,6 +563,8 @@ def sim_held(pdir, rows_rel_deg, start_rel_deg, cap_ma: int, robots: int, seed: 
     rig.detach()
     env.close()
     out["duty_cap"] = duty
+    out["actuator"] = opt.actuator
+    out["built_env"] = built
     return out
 
 
@@ -609,7 +654,7 @@ def mode_stream(a) -> int:
     start = rel_deg_from_dd(log["pos_dd"][0], log["stand"], con.signs)
     t_rows = t_grid - t_grid[0]
     win = (log["t0"] - t_grid[0], log["t1"] - t_grid[0])
-    sim = sim_held(a.policy, rows, start, log["cap"], a.robots, a.seed, a.device)
+    sim = sim_held(a.policy, rows, start, log["cap"], a.robots, a.seed, a.device, plant=plant_of(a))
     c = compare_stream(robot_report(log, con.signs), sim_report(sim, rows, t_rows, win), slow)
     rise = housing_rise(log["temp_dc"])
     play = (log["t"] >= log["t0"]) & (log["t"] <= log["t1"])
@@ -621,7 +666,8 @@ def mode_stream(a) -> int:
     checks["played_to_the_end"] = log["meta"].get("stop_reason") == "completed"     # a short window would pass on less
     checks["sends_match_the_file"] = bool(file_check["max_diff_dd"] is not None and file_check["max_diff_dd"] <= FILE_DIFF_MAX_DD)
     out = {"mode": "stream", "log": str(a.log), "stream": str(a.stream), "policy": str(a.policy), "slow": slow,
-           "cap_ma": log["cap"], "sim_duty_cap": sim["duty_cap"], "robots": a.robots, "seed": a.seed,
+           "cap_ma": log["cap"], "sim_duty_cap": sim["duty_cap"], "actuator": sim["actuator"], "robots": a.robots,
+           "seed": a.seed, "plant_flags": plant_of(a), "built_env": sim["built_env"],
            "stop_reason": log["meta"].get("stop_reason"), "clipped_sends": log["meta"].get("clipped_sends"),
            "getup_echo_share": echo, "housing_rise_c": rise.round(2).tolist(), "housing_rise_max_c": float(rise.max()),
            "file_check": file_check, "compare": c, "checks": checks, "pass": all(checks.values()),
@@ -655,10 +701,10 @@ def mode_predict(a) -> int:
     rows = rel_deg_from_dd(rows_dd, stand, con.signs)
     t_rows = np.arange(len(rows)) * STEP
     win = (t_rows[i0], t_rows[i0 + nplay - 1])
-    sim = sim_held(a.policy, rows, np.zeros(12), a.cap, a.robots, a.seed, a.device)
+    sim = sim_held(a.policy, rows, np.zeros(12), a.cap, a.robots, a.seed, a.device, plant=plant_of(a))
     s = sim_report(sim, rows, t_rows, win)
     out = {"mode": "predict", "stream": str(a.stream), "policy": str(a.policy), "cap_ma": a.cap, "robots": a.robots,
-           "sim_duty_cap": sim["duty_cap"], "band_deg": band.tolist(), "step_deg": a.step_deg, "seconds": nplay * STEP,
+           "sim_duty_cap": sim["duty_cap"], "actuator": sim["actuator"], "plant_flags": plant_of(a), "built_env": sim["built_env"], "band_deg": band.tolist(), "step_deg": a.step_deg, "seconds": nplay * STEP,
            "clipped_sends": clipped, "groups": {}}
     print(f"{a.stream}: {nplay * STEP:.2f} s, clipped sends {clipped}, cap {a.cap} mA (duty <= {sim['duty_cap']:.2f})")
     for g, idx in GROUPS.items():
@@ -674,19 +720,21 @@ def mode_predict(a) -> int:
 
 
 def floor_rollout(pdir, robots: int, seed: int, seconds: float, device: str, start=None, start_name: str = "left",
-                  restart_s: float = 0.0, stop_on_handback: bool = False) -> dict:
+                  restart_s: float = 0.0, stop_on_handback: bool = False, actuator: str | None = None,
+                  plant: dict | None = None) -> dict:
     """``robots`` get-ups: from ``start`` ({"rel": (12,) rad, "g": (3,)}) or a named ``getup_eval`` start, settled
     on the floor. Per policy step (T, n, ...): obs, raw, target rel, the position 20 ms later, currents, tilt, gyro,
     rms; hand-back time per robot; ``rig``: the 5 ms samples. ``stop_on_handback`` ends the rollout when every robot has
     handed back (fake runs)."""
     import torch
-    from mp4_recovery.eval import getup_eval as ge
-    from mp4_recovery.gpu.getup_task import tilt_deg, _yaw_of  # noqa: F401
-    from mp4_recovery.eval.terrain_eval import TorchPolicy, bam_currents
+
+    from mp4_rl.getup.eval import getup_eval as ge
+    from mp4_rl.getup.task import _yaw_of, tilt_deg  # noqa: F401
+    from mp4_rl.walker.eval.terrain import TorchPolicy, bam_currents
 
     pol = TorchPolicy(Path(pdir) / "policy.npz", device)
     phase_s = float(pol.meta.get("getup_phase_s", 0.0) or 0.0)
-    env, _ = ge.build(Path(pdir), robots, seed, device=device)
+    env, opt, built = _build(pdir, robots, seed, device, plant if plant is not None else {"actuator": servo_flags(actuator)})
     rig = Rig(env)
     term = rig.term
     dev = env.device
@@ -696,7 +744,7 @@ def floor_rollout(pdir, robots: int, seed: int, seconds: float, device: str, sta
     env.reset()
     settled = {}
     if start is not None:
-        from mp4_recovery.gpu.getup_task import spawn_overlaps
+        from mp4_rl.getup.task import spawn_overlaps
         rng = np.random.default_rng(seed)
         quat = np.stack([quat_from_gravity(start["g"], y) for y in rng.uniform(-math.pi, math.pi, robots)])
         quat = torch.as_tensor(quat, dtype=torch.float32, device=dev)
@@ -771,7 +819,7 @@ def floor_rollout(pdir, robots: int, seed: int, seconds: float, device: str, sta
                 break
     out = {k: np.stack(v) for k, v in rec.items()}
     out.update(t_handback=t_hb.cpu().numpy(), rig=rig.arrays(), settled_tilt=settled["tilt_deg"], restarts=restarts,
-               phase_s=phase_s, scale=np.asarray(pol.scale))
+               phase_s=phase_s, scale=np.asarray(pol.scale), actuator=opt.actuator, built_env=built)
     rig.detach()
     env.close()
     return out
@@ -840,7 +888,8 @@ def mode_floor(a) -> int:
     start = run_start(real)
     if start["gyro0"] > 1.0:
         notes.append(f"the entry was in motion (|gyro| {start['gyro0']:.1f} rad/s): simulated from rest")
-    sim = floor_rollout(a.policy, a.robots, a.seed, seconds, a.device, start=start, restart_s=restart)
+    sim = floor_rollout(a.policy, a.robots, a.seed, seconds, a.device, start=start, restart_s=restart,
+                        plant=plant_of(a))
     T = min(len(real["tilt"]), len(sim["tilt"]))
     t_hb = sim["t_handback"]
     share = float((t_hb >= 0).mean())
@@ -857,7 +906,8 @@ def mode_floor(a) -> int:
                   "ratio_p99": ratio(pct(real["cur"][:T][:, idx], 99), pct(sim["cur"][:T][:, :, idx], 99))}
               for g, idx in GROUPS.items()}
     real_tilt0 = float(np.degrees(np.arccos(np.clip(-start["g"][2], -1, 1))))
-    out = {"mode": "floor", "run": run["prefix"], "policy": str(a.policy), "robots": a.robots, "seed": a.seed,
+    out = {"mode": "floor", "run": run["prefix"], "policy": str(a.policy), "actuator": sim["actuator"],
+           "plant_flags": plant_of(a), "built_env": sim["built_env"], "robots": a.robots, "seed": a.seed,
            "seconds": seconds, "getup": a.getup, "phase_restart_s": restart, "phase_restarts_sim": sim["restarts"],
            "phase_restart_supported": True, "real": {"up": w["up"], "t_s": w["t_s"], "end": w["end"],
                                                      "stop_reason": meta.get("stop_reason")},
@@ -887,8 +937,8 @@ def mode_floor(a) -> int:
 
 
 def mode_obs(a) -> int:
-    from mp4_recovery.policy_file import NumpyPolicy
-    from mp4_recovery.deploy.runner import load_mount
+    from mp4_rl.common.policy_file import NumpyPolicy
+    from mp4_rl.getup.runner.runner import load_mount
     run = load_run(a.run)
     w = getup_window(run, a.getup)
     real = real_series(run, w)
@@ -899,7 +949,8 @@ def mode_obs(a) -> int:
            "ok": bool(d.max() <= 1e-3)}
     # gravity's sign, independently of the rollout (which starts from the logged gravity)
     m = run["main"]
-    _, R = load_mount(run["meta"].get("mount"))
+    mr = run["meta"].get("mount_R")                    # the run's own matrix (a custom mount); else the mounting it names
+    R = np.asarray(mr, dtype=float) if mr is not None else load_mount(run["meta"].get("mount"))[1]
     st = run["steps"]
     idx = np.clip(np.searchsorted(m["tick"].astype(np.int64), np.asarray(st["tick"][w["k0"]:w["k1"]], dtype=np.int64)),
                   0, len(m["tick"]) - 1)
@@ -909,12 +960,15 @@ def mode_obs(a) -> int:
     grav = gravity_checks(real["obs"][:, 3:6], real["obs"][:, :3], real["tilt"], g_acc)
     # the channels against a short rollout
     sim = floor_rollout(a.policy, a.robots, a.seed, min(max(len(d) * STEP, 2.0), a.seconds), a.device,
-                        start=run_start(real), restart_s=float(run["meta"].get("getup_phase_restart_s", 0.0) or 0.0))
+                        start=run_start(real), restart_s=float(run["meta"].get("getup_phase_restart_s", 0.0) or 0.0),
+                        plant=plant_of(a))
     O = sim["obs"].reshape(-1, sim["obs"].shape[-1])
     lo, hi = np.percentile(O, 0.05, axis=0), np.percentile(O, 99.95, axis=0)
     pad = OBS_RANGE_MARGIN * (hi - lo) + 1e-3                # + a tolerance for a channel constant in the sim (phase)
     outside = obs_outside(real["obs"], lo - pad, hi + pad)
-    out = {"mode": "obs", "run": run["prefix"], "policy": str(a.policy), "actions": rep, "gravity": grav,
+    out = {"mode": "obs", "run": run["prefix"], "policy": str(a.policy), "actuator": sim["actuator"], "plant_flags": plant_of(a),
+           "built_env": sim["built_env"], "actions": rep,
+           "gravity": grav,
            "channels_outside": outside, "notes": policy_warnings(run, a.policy, w)}
     print(f"actions: {rep['frames']} frames, max |pred - logged| {rep['max_abs_diff']:.2e}: "
           + ("reproduced" if rep["ok"] else f"NOT REPRODUCED on {rep['frames_differing']} frames"))
@@ -944,12 +998,21 @@ def _write(path, out) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
+    from mp4_sim.actuators import choice as servo_model
+
+    from mp4_rl.common.bounds import add_legs_args
+    from mp4_rl.common.built_env import masses_arg
 
     def common(s, robots):
         s.add_argument("--policy", required=True, help="the export directory (policy.npz + config.json)")
         s.add_argument("--robots", type=int, default=robots)
         s.add_argument("--seed", type=int, default=7)
         s.add_argument("--device", default="cuda:0")
+        servo_model.add_args(s, evaluation=True)       # --actuator, --supply-v, --supply-drop-ohm, --r-scale
+        add_legs_args(s)                                # --legs, --foot, --foot-radius
+        s.add_argument("--masses-json", type=masses_arg, default=None,
+                       help="the plant's masses file (a path or a file name in the robot's measured data in mp4_sim; default: the "
+                            "policy's run's)")
         s.add_argument("--json")
 
     s = sub.add_parser("stream")
@@ -959,7 +1022,7 @@ def main(argv=None) -> int:
     common(s, 16)
     s = sub.add_parser("predict")
     s.add_argument("--stream", required=True)
-    s.add_argument("--cap", type=int, default=2000, help="frame cap mA (the plan's A5: 2000; A4: 600)")
+    s.add_argument("--cap", type=int, default=2000, help="frame cap mA (default %(default)s, the runner's)")
     s.add_argument("--band-deg", default="90,180,180", help="abduction, hip, knee")
     s.add_argument("--step-deg", type=float, default=20.0)
     common(s, 16)
