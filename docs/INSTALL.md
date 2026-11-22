@@ -21,7 +21,7 @@ Both modes install [mini_pupper_4_sim](https://github.com/mangdangroboticsclub/m
 release v0.2.0: the robot models, their measured data (calibration, joint limits, masses), the servo models and the
 simulation scenes this package trains and evaluates on. The Raspberry Pi installs nothing: `tools/deploy.sh` copies the
 runner, the policy folders and two files of `mp4_sim` (see the get-up's
-[robot guide](../skills/getup/docs/ROBOT_SKU2.md)).
+[robot guide](../mp4_rl/skills/getup/docs/ROBOT_SKU2.md)).
 
 Training and evaluation need `gpu`. `cpu` runs the policy checks, the deployment
 code and `tests/cpu`.
@@ -50,9 +50,10 @@ It:
    on macOS, PyPI's torch).
 3. Installs this package in editable mode. `pyproject.toml` lists numpy only
    (and the extras `pi` and `gpu`); backend packages and all pins come from
-   `requirements/`. The policies, checkpoints and recipes stay in `skills/` in
-   the checkout, and the tools' defaults point there: run the commands from the
-   repository root.
+   `requirements/`. Each policy's folder, `mp4_rl/skills/<name>/`, is part of the
+   package: its code with its recipes, exported policies, checkpoints and
+   evaluation scripts. The recipes and evaluation scripts take paths relative to
+   the repository root: run them from there.
 4. In `gpu` mode, patches MuJoCo Warp (`.venv/bin/python -m mp4_sim.envs.patch_warp`,
    see below).
 5. Checks (`scripts/install/verify.py`): `mujoco-core` is not installed (see
@@ -63,6 +64,11 @@ It:
    calibration, joint limits and robot model hashes match `mp4_sim`'s files.
 
 Use `--venv` for a different location. Re-running is safe; the venv is reused.
+
+The package also installs as a regular (non-editable) package, for example into an environment of your own that already
+has `mp4-sim`: `uv pip install .`, or a wheel built with `uv build`. The wheel holds the policy folders with their
+policies and checkpoints (not the animations), so the runner's defaults and `scripts/install/verify.py` find them inside
+the installed package.
 
 ## The MuJoCo Warp patch
 

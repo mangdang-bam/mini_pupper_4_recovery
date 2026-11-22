@@ -254,4 +254,4 @@ Needs no robot and no port. It checks:
 get-up whose folders carry different calibrations, and checks each target before sending it.
 
 `tools/make_contract.py` writes a calibration file for a recalibrated robot, and `.venv/bin/python -m mp4_rl.common.export --from-policy
-DIR OUT --contract FILE` writes a policy's bounds for it, with the calibration in its folder: see [ROBOT_SKU2.md](../skills/getup/docs/ROBOT_SKU2.md#adapting-to-another-unit).
+DIR OUT --contract FILE` writes a policy's bounds for it, with the calibration in its folder: see [ROBOT_SKU2.md](../mp4_rl/skills/getup/docs/ROBOT_SKU2.md#adapting-to-another-unit).
