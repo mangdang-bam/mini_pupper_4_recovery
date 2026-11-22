@@ -11,23 +11,30 @@ What the shipped files are and where they came from.
 | `skills/getup/checkpoints/sku2/getup_start/model_6544.pt` | The get-up's starting checkpoint: a get-up trained with the earlier servo model fit (`md01`) and an earlier mass estimate of the robot, with a load on the hood and uneven ground | `690dd19d9e627e224d07bd581dae399c79b7e94afaf274d128bed8aa889f6c99` |
 | `skills/getup/checkpoints/sku2/getup/model_7543.pt` | The get-up's final checkpoint: `recipes/sku2/finetune.sh` from the starting checkpoint (seed 72) | `2ebb10d46af9561ee684a13362a5febf3afc734eba9cfa94abfc22e223f9ddc7` |
 | `skills/*/policies/sku2/sku2_contract.json`, `sku2_joint_limits.json` | Byte copies of the SKU2's calibration and joint limits from mini_pupper_4_sim 0.2.0 (`robot/assets/sku_2/measured/`), the files each policy was exported for | `86f1d330a9f30d7e…`, `9cad8e76f4b8bf50…` |
+| `skills/walker/policies/sku1/policy.npz` | The SKU1 walker that ran on the robot: `skills/walker/checkpoints/sku1/walker/model_11792.pt` exported for the SKU1 (`mp4_rl.common.export --robot sku1`), the abductions' stand 12° wider | `0168c007d4c7a6d56495d64725cecdbade39dd18c31929f65952094a6727a492` |
+| `skills/getup/policies/sku1/policy.npz` | The SKU1 get-up that ran on the robot: `skills/getup/checkpoints/sku1/getup/model_7543.pt` exported for the SKU1 | `563f3c6b6a400d205d9aa7ad1e3327e58c43566617c9b28ec6c5042216d7d95f` |
+| `skills/walker/checkpoints/sku1/walker/model_11792.pt` | The SKU1 walker's final checkpoint: `recipes/sku1/finetune.sh` from the SKU2 walker's final checkpoint (`checkpoints/sku2/walker/model_10793.pt`), seed 210, 1000 iterations; the run used the walk-mode joint limits estimated before the SKU1's legs were traced (the SKU2's measured ranges at the SKU1's calibration), where the recipe uses the traced limits | `b715fa03d141b467e7a3157e4e294248d1d9f4631ca652eb3aa0f8c94a786fac` |
+| `skills/getup/checkpoints/sku1/getup/model_7543.pt` | The SKU1 get-up's final checkpoint: `recipes/sku1/finetune.sh` from the get-up's starting checkpoint (`checkpoints/sku2/getup_start/model_6544.pt`), seed 71, 1000 iterations | `3bf8bef6b18d534f4c50c2017f91ccd56e493c1a6d66d93852f0fa4d30d1079b` |
+| `skills/*/policies/sku1/sku1_contract.json`, `sku1_joint_limits.json` | Byte copies of the SKU1's calibration and joint limits from mini_pupper_4_sim 0.2.0 (`robot/assets/sku_1/measured/`), the files each SKU1 policy was exported for | `48720bbdd8828779…`, `8b1274d545b5cb9f…` |
 
 The two starting checkpoints are given as they are: they are where the recipes begin, and their own training can't be
-reproduced from this repository. No SKU1
-policy or checkpoint is shipped: the SKU1 recipes (`skills/*/recipes/sku1/`) start from the SKU2 checkpoints above.
+reproduced from this repository. The SKU1 recipes (`skills/*/recipes/sku1/`) start from the SKU2 checkpoints above. A
+recipe run again gives a policy of its own (training on a GPU is not bit-reproducible, and the result depends on the
+seed); the shipped checkpoints are the runs whose policies ran on the robots.
 
 Each checkpoint's `config.json` holds only the run options that `--resume` and `mp4_rl.common.export` read. Each policy's
 meta records its checkpoint's sha256 (`checkpoint_sha256`), the calibration's (`contract_sha256`), the joint limits'
 (`bounds.info.limits_sha256`), the robot model's (`legs.model_sha256`), and `source_policy_sha256`, which
 `mp4_rl.common.export --from-policy` records: the hash of the policy file the weights were copied from. Each policy's
-`config.json` names the robot model, masses, joint limits and servo parameters it was trained on by their names in
-mini_pupper_4_sim (`mp4_sim:...`) and their sha256.
+`config.json` holds its training run's options and names the robot model, masses, joint limits and servo parameters
+it was trained on by their names in mini_pupper_4_sim (`mp4_sim:...`) and their sha256; the SKU1 walker's names the
+traced joint limits it is exported for (above).
 
 ## Data
 
 | File | What it is |
 |---|---|
-| `src/mp4_rl/getup/data/sku2_proven_reach.json` | How far each hip has moved towards the body's middle on the robot, per abduction bin (the 99.5th percentile, from at least 20 samples): summarised from 28 runs on one SKU2 (809.5 s); the logs are not published. `mp4_rl.getup.eval.reach` compares a simulated get-up with it |
+| `src/mp4_rl/getup/data/sku2_proven_reach.json` | How far each hip has moved towards the body's middle on the robot, per abduction bin (the 99.5th percentile, from at least 20 samples): summarised from 28 runs on the SKU2 (809.5 s); the logs are not part of this repository. `mp4_rl.getup.eval.reach` compares a simulated get-up with it |
 | `tests/cpu/data/feedback_glitches.npz` | Two excerpts of a SKU2 run log: a limp leg moved by hand with ten frames of impossible position readings, and a still stretch |
 | `tests/cpu/data/sku2_imu_captures.npz` | Accelerometer captures from the SKU2 while trotting |
 | `tests/cpu/data/firmware_trot_ticks.npz` | The firmware's trot (its gait and inverse kinematics, built on the host) tabulated at several speeds for one calibration |
@@ -37,4 +44,4 @@ mini_pupper_4_sim (`mp4_sim:...`) and their sha256.
 
 The robot model, its measured data, the fitted servo parameters and the servo model code come from mini_pupper_4_sim;
 the servo model builds on [BAM](https://github.com/Rhoban/bam). The masses were weighed and the joint limits measured by
-hand on one robot.
+hand on the robots the policies ran on.

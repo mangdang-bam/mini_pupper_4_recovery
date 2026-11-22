@@ -2,13 +2,13 @@
 # Evaluate the walker in simulation on the SKU1's plant, and the firmware's classic gait as its baseline: one JSON per
 # evaluation in OUT, which skills/walker/eval/score.py turns into the result tables.
 #
-#   WALKER=POLICY sh skills/walker/eval/sku1.sh OUT [NAME ...]
+#   sh skills/walker/eval/sku1.sh OUT [NAME ...]
 #
 # NAME: run only these evaluations (e.g. omni_s21 push_s22); default all of them. An evaluation whose JSON is already in
 # OUT is skipped, so the script can be run again after a stop. Each writes OUT/NAME.json and its output to OUT/NAME.log.
 # A failed evaluation is reported and the others still run; the script then exits with status 1.
-# Run from the repository root. Environment: PYTHON (default .venv/bin/python), WALKER (required: a walker exported for
-# the SKU1, see skills/walker/README.md), QUICK=1 runs each evaluation with an eighth of its robots (a quick check, not
+# Run from the repository root. Environment: PYTHON (default .venv/bin/python), WALKER (default
+# skills/walker/policies/sku1; any walker exported for the SKU1, see skills/walker/README.md), QUICK=1 runs each evaluation with an eighth of its robots (a quick check, not
 # a result; give it its own OUT), VIDEOS=1 also records three short videos.
 #
 # The plant: the MD-300 servo model with a 3S supply (10.5-12.6 V), the SKU1's weighed masses, the legs and joint limits from
@@ -22,7 +22,7 @@ set -eu
 OUT=$1
 shift
 ONLY=" $* "
-WALKER=${WALKER:?WALKER: a walker policy folder exported for the SKU1}
+WALKER=${WALKER:-skills/walker/policies/sku1}
 PY="env -u PYTHONPATH PYTHONPATH=$PWD/src WANDB_MODE=disabled MUJOCO_GL=egl ${PYTHON:-.venv/bin/python} -B"
 PLANT="--actuator md300 --supply-v 10.5 12.6 --masses-json sku1_masses_413g.json"
 LIDAR="--attachment 35,19,-0.005,47.2"

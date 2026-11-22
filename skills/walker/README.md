@@ -7,7 +7,7 @@ over after a fall.
 | Robot | Policy | Inputs | Status |
 |---|---|---|---|
 | SKU2 | [`policies/sku2`](policies/sku2) | 450 (10 frames × 45) | ran on the robot |
-| SKU1 | [not available yet](policies/sku1/README.md) | | recipe and evaluation in simulation |
+| SKU1 | [`policies/sku1`](policies/sku1) | 450 (10 frames × 45) | ran on the robot |
 
 The policy folder holds `policy.npz` (the network and its metadata, [POLICY_CONTRACT.md](../../docs/POLICY_CONTRACT.md)),
 `config.json` (the training run's options) and copies of the calibration and joint limits it was exported for.
@@ -59,16 +59,23 @@ one.
 
 | Recipe | Parent | Seed | Iterations |
 |---|---|---|---|
-| `sku1/finetune.sh` | `checkpoints/sku2/walker/model_10793.pt` | 201 | 1000 |
+| `sku1/finetune.sh` | `checkpoints/sku2/walker/model_10793.pt` | 210 | 1000 |
 
 What it changes:
 
 - the SKU1 (`--robot sku1`): its model, calibration, joint limits traced on the robot and weighed masses (413.4 g);
+- rough ground (relief, slopes, steps and boxes) instead of the narrow stairs;
 - the get-up's self-collision on the walker's plant;
 - the SKU1's lidar (47.2 g with its mount, its axis drawn 20 mm behind to 10 mm in front of the base origin and 10 mm
   either side) on half the robots;
 - the whole robot's centre of mass drawn 61-70 mm above the floor;
-- anchored (below) to the shipped SKU2 walker exported for the SKU1.
+- anchored (below) to the shipped SKU2 walker exported for the SKU1, over the whole command range (up to 0.20 m/s and
+  2.0 rad/s turning in place, 1.0 rad/s while walking) and with weight 10 instead of 5.
+
+`checkpoints/sku1/walker/model_11792.pt` is its last checkpoint: `policies/sku1` was exported from it. The run that made
+it used the walk-mode joint limits estimated before the SKU1's legs were traced (the SKU2's measured ranges at the
+SKU1's calibration); the recipe uses the traced limits, which the policy is exported for. Other seeds of the recipe came
+out weaker in simulation than this run: evaluate a new run before using it.
 
 The anchor is a policy folder the script makes before training, unless `ANCHOR` names another:
 
@@ -137,25 +144,32 @@ QUICK=1 WALKER=runs/exports/walker sh skills/walker/eval/sku2.sh runs/eval_walke
 `source_policy_sha256` records the folder's `policy.npz`) and byte-identical copies of `config.json`, the calibration
 and the joint limits. An export of the final checkpoint (`checkpoints/sku2/walker/model_10793.pt`) gives the same
 network arrays and metadata except `source_policy_sha256`; the `policy.npz` bytes and `config.json` differ, because the
-shipped folder is itself a `--from-policy` copy. `tests/cpu/test_policies.py` checks both against the shipped folders:
+shipped folder is itself a `--from-policy` copy. For the SKU1 walker, `--from-policy policies/sku1` gives the same
+arrays and metadata (plus `source_policy_sha256`) and byte-identical copies of the other files, and an export of
+`checkpoints/sku1/walker/model_11792.pt` gives the shipped `policy.npz` byte for byte (its `config.json` then holds only
+the checkpoint's options).
+`tests/cpu/test_policies.py` checks all of them against the shipped folders:
 
 ```sh
 CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest tests/cpu/test_policies.py -k export
 ```
 
-**On the SKU1:** `skills/walker/eval/sku1.sh` runs the same evaluations on the SKU1's plant, for a walker exported for
-the SKU1 (`WALKER` is required), e.g. the SKU2 walker as it is:
+**On the SKU1:** `skills/walker/eval/sku1.sh` runs the same evaluations on the SKU1's plant, by default for
+`policies/sku1`; `WALKER` selects another walker exported for the SKU1, e.g. the SKU2 walker as it is:
 
 ```sh
-.venv/bin/python -m mp4_rl.common.export --from-policy skills/walker/policies/sku2 runs/exports/walker_sku1 --robot sku1
-WALKER=runs/exports/walker_sku1 sh skills/walker/eval/sku1.sh runs/eval_walker_sku1 omni_s21 push_s21
+sh skills/walker/eval/sku1.sh runs/eval_walker_sku1 omni_s21 push_s21
 .venv/bin/python skills/walker/eval/score.py runs/eval_walker_sku1
+
+.venv/bin/python -m mp4_rl.common.export --from-policy skills/walker/policies/sku2 runs/exports/walker_sku1 --robot sku1
+WALKER=runs/exports/walker_sku1 sh skills/walker/eval/sku1.sh runs/eval_walker_sku2_on_sku1 omni_s21
 ```
 
-**Simulation results** are not published in this repository: run the evaluations above to produce the tables. A result
-depends on the seed and varies by a few points between runs on a GPU.
+**Simulation results** come from these evaluations: each JSON in `OUT` holds one evaluation's figures, and `score.py`
+prints the tables. A result depends on the seed and varies by a few points between runs on a GPU.
 
 ## On the robot
 
-The walker runs on the Raspberry Pi with the get-up's runner (`mp4_rl.getup.runner`, which runs both policies and
-switches between them): see the get-up's [robot guide](../getup/docs/ROBOT_SKU2.md).
+On the SKU2 the walker runs on the Raspberry Pi with the get-up's runner (`mp4_rl.getup.runner`, which runs both
+policies and switches between them): see the get-up's [SKU2 robot guide](../getup/docs/ROBOT_SKU2.md). On the SKU1 both
+policies run on the ESP32 with the Mini Pupper v4 firmware: see the [SKU1 robot guide](../getup/docs/ROBOT_SKU1.md).

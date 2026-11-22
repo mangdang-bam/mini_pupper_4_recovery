@@ -36,10 +36,13 @@ def policy_hashes() -> list:
     import numpy as np
     from mp4_sim import paths, robots
 
-    r = robots.get("sku2")
     out = []
-    for folder in sorted((ROOT / "skills").glob("*/policies/sku2")):
-        name = folder.parent.parent.name
+    for folder in sorted((ROOT / "skills").glob("*/policies/sku[12]")):
+        r = robots.get(folder.name)
+        name = f"{folder.parent.parent.name} {folder.name}"
+        if not (folder / "policy.npz").is_file():
+            out.append((name, "no policy.npz"))
+            continue
         meta = json.loads(str(np.load(folder / "policy.npz", allow_pickle=False)["meta"]))
         bad = []
         if meta.get("contract_sha256") != paths.sha256(r.contract_json):
@@ -48,6 +51,8 @@ def policy_hashes() -> list:
             bad.append("joint limits")
         if (meta.get("legs") or {}).get("model_sha256") != paths.sha256(r.xml):
             bad.append("robot model")
+        if (meta.get("robot") or "sku2") != r.name:
+            bad.append("robot")
         for f in (r.contract_json, r.limits_json):
             if (folder / f.name).read_bytes() != f.read_bytes():
                 bad.append(f"the folder's {f.name}")

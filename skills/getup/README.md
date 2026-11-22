@@ -1,22 +1,25 @@
 # The get-up
 
 A get-up policy for the Mini Pupper v4: puts the robot back on its feet from any fall pose, with or without the lidar on
-the hood. On the robot it runs together with the [walker](../walker/README.md): the runner on the Raspberry Pi switches
-to the get-up on a detected fall and back to the walker once the robot stands.
+the hood. On the robot it runs together with the [walker](../walker/README.md): on a detected fall it takes over from
+the walker, and it hands back once the robot stands (on the SKU2 the runner on the Raspberry Pi switches between them,
+on the SKU1 the Mini Pupper v4 firmware on the ESP32).
 
 | Robot | Policy | Inputs | Status |
 |---|---|---|---|
 | SKU2 | [`policies/sku2`](policies/sku2) | 45 | ran on the robot |
-| SKU1 | [not available yet](policies/sku1/README.md) | | recipe and evaluation in simulation |
+| SKU1 | [`policies/sku1`](policies/sku1) | 45 | ran on the robot |
 
 The policy folder holds `policy.npz`, `config.json` and copies of the calibration and joint limits it was exported for;
 the runner reads the calibration from there ([POLICY_CONTRACT.md](../../docs/POLICY_CONTRACT.md)).
 
 ## On the robot
 
-[docs/ROBOT_SKU2.md](docs/ROBOT_SKU2.md): the firmware, deploying to the Pi (`tools/deploy.sh`), the checks before a run,
-launching, stopping, the safety rules and what was measured. The runner (`src/mp4_rl/getup/runner/`) and the servo link
-(`src/mp4_rl/getup/mp4link/`) need numpy and pyserial only.
+- SKU2: [docs/ROBOT_SKU2.md](docs/ROBOT_SKU2.md): the firmware, deploying to the Pi (`tools/deploy.sh`), the checks
+  before a run, launching, stopping, the safety rules and what was measured. The runner (`src/mp4_rl/getup/runner/`) and
+  the servo link (`src/mp4_rl/getup/mp4link/`) need numpy and pyserial only.
+- SKU1: [docs/ROBOT_SKU1.md](docs/ROBOT_SKU1.md): both policies on the ESP32 with the Mini Pupper v4 firmware, the safety
+  rules and what was measured.
 
 ## How it was made
 
@@ -60,6 +63,8 @@ fine-tune's settings (the trainer's table under [The trainer](#the-trainer)), ex
 ```sh
 sh skills/getup/recipes/sku1/finetune.sh 71     # output in runs/getup_sku1/
 ```
+
+`checkpoints/sku1/getup/model_7543.pt` is its last checkpoint: `policies/sku1` was exported from it.
 
 ### The trainer
 
@@ -131,22 +136,27 @@ QUICK=1 GETUP=runs/exports/getup sh skills/getup/eval/sku2.sh runs/eval_getup_qu
 `source_policy_sha256` records the folder's `policy.npz`) and byte-identical copies of `config.json`, the calibration
 and the joint limits. An export of the final checkpoint (`checkpoints/sku2/getup/model_7543.pt`) gives the same network
 arrays and metadata except `source_policy_sha256`; the `policy.npz` bytes and `config.json` differ, because the shipped
-folder is itself a `--from-policy` copy. `tests/cpu/test_policies.py` checks both against the shipped folders:
+folder is itself a `--from-policy` copy. For the SKU1 get-up, `--from-policy policies/sku1` gives the same arrays and
+metadata (plus `source_policy_sha256`) and byte-identical copies of the other files, and an export of
+`checkpoints/sku1/getup/model_7543.pt` gives the shipped `policy.npz` byte for byte (its `config.json` then holds only the
+checkpoint's options). `tests/cpu/test_policies.py` checks all of them against the shipped folders:
 
 ```sh
 CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest tests/cpu/test_policies.py -k export
 ```
 
-**On the SKU1:** no get-up has been fine-tuned for the SKU1 yet. The SKU1 recipe starts from the get-up's starting
-checkpoint, so that checkpoint exported for the SKU1 (the network as it is, the decoder's clamps from the SKU1's
-calibration and joint limits) is the baseline a SKU1 fine-tune is compared with. `skills/getup/eval/sku1.sh` evaluates
-it; it needs `GETUP`, and `WALKER` for the sequence (a walker exported for the SKU1, see [the walker](../walker/README.md)):
+**On the SKU1:** `skills/getup/eval/sku1.sh` runs the same evaluations on the SKU1's plant, by default for
+`policies/sku1` (and `skills/walker/policies/sku1` in the sequence); `GETUP` and `WALKER` select others exported for the
+SKU1 (`WALKER=` skips the sequence). The get-up's starting checkpoint exported for the SKU1 (the network as it is, the
+decoder's clamps from the SKU1's calibration and joint limits) is the baseline the SKU1 fine-tune is compared with:
 
 ```sh
-.venv/bin/python -m mp4_rl.common.export skills/getup/checkpoints/sku2/getup_start/model_6544.pt \
-    runs/exports/getup_sku1 --robot sku1 --limits
-GETUP=runs/exports/getup_sku1 sh skills/getup/eval/sku1.sh runs/eval_getup_sku1 gflat_s21 glidar_s21
+sh skills/getup/eval/sku1.sh runs/eval_getup_sku1 gflat_s21 glidar_s21 seq_s21
 .venv/bin/python skills/getup/eval/score.py runs/eval_getup_sku1
+
+.venv/bin/python -m mp4_rl.common.export skills/getup/checkpoints/sku2/getup_start/model_6544.pt \
+    runs/exports/getup_start_sku1 --robot sku1 --limits
+GETUP=runs/exports/getup_start_sku1 sh skills/getup/eval/sku1.sh runs/eval_getup_start_sku1 gflat_s21 glidar_s21
 ```
 
 `--limits` puts the measured joint limits in the decoder's clamps. The starting checkpoints were trained without them
@@ -154,8 +164,8 @@ GETUP=runs/exports/getup_sku1 sh skills/getup/eval/sku1.sh runs/eval_getup_sku1 
 the limits) or of a policy folder (`--from-policy`) takes it from the run or the folder.
 
 An exported policy folder converts the same way: `python -m mp4_rl.common.export --from-policy DIR OUT --robot sku1`.
-The recipe trains with the display as a collision box; to evaluate with it, add `--display-collision` to the
-evaluator's command line (a policy exported from a run with it has it in its metadata).
+The SKU1 recipe trains with the display as a collision box; a policy exported from such a run has it in its metadata,
+and the evaluators use it. To evaluate another policy with it, add `--display-collision` to the evaluator's command line.
 
-**Simulation results** are not published in this repository: run the evaluations above to produce the tables. A result
-depends on the seed and varies by a few points between runs on a GPU.
+**Simulation results** come from these evaluations: each JSON in `OUT` holds one evaluation's figures, and `score.py`
+prints the tables. A result depends on the seed and varies by a few points between runs on a GPU.

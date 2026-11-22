@@ -2,14 +2,14 @@
 # Evaluate the get-up in simulation on the SKU1's plant, alone and in sequence with the walker: one JSON per evaluation
 # in OUT, which skills/getup/eval/score.py turns into the result tables.
 #
-#   GETUP=POLICY sh skills/getup/eval/sku1.sh OUT [NAME ...]
+#   sh skills/getup/eval/sku1.sh OUT [NAME ...]
 #
 # NAME: run only these evaluations (e.g. gflat_s21 seq_s21); default all of them. An evaluation whose JSON is already in
 # OUT is skipped, so the script can be run again after a stop. Each writes OUT/NAME.json and its output to OUT/NAME.log.
 # A failed evaluation is reported and the others still run; the script then exits with status 1.
-# Run from the repository root. Environment: PYTHON (default .venv/bin/python), GETUP (required: a get-up exported for
-# the SKU1, see skills/getup/README.md), WALKER (a walker exported for the SKU1, for the sequence; without it the
-# sequence is skipped), QUICK=1 runs each evaluation with an eighth of its robots (a quick check, not a result; give it
+# Run from the repository root. Environment: PYTHON (default .venv/bin/python), GETUP (default
+# skills/getup/policies/sku1), WALKER (default skills/walker/policies/sku1, for the sequence; WALKER= skips the
+# sequence), QUICK=1 runs each evaluation with an eighth of its robots (a quick check, not a result; give it
 # its own OUT), VIDEOS=1 also records a short video.
 #
 # The plant: the MD-300 servo model with a 3S supply (10.5-12.6 V), the SKU1's weighed masses, the legs and joint limits from
@@ -22,8 +22,8 @@ set -eu
 OUT=$1
 shift
 ONLY=" $* "
-GETUP=${GETUP:?GETUP: a get-up policy folder exported for the SKU1}
-WALKER=${WALKER:-}
+GETUP=${GETUP:-skills/getup/policies/sku1}
+WALKER=${WALKER-skills/walker/policies/sku1}
 PY="env -u PYTHONPATH PYTHONPATH=$PWD/src WANDB_MODE=disabled MUJOCO_GL=egl ${PYTHON:-.venv/bin/python} -B"
 PLANT="--actuator md300 --supply-v 10.5 12.6 --masses-json sku1_masses_413g.json"
 LIDAR="--attachment 35,19,-0.005,47.2"

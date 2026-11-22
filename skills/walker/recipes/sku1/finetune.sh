@@ -1,10 +1,11 @@
 #!/bin/sh
-# Fine-tune the walker for the SKU1: continue the SKU2's fine-tuned walker on the SKU1's simulated plant, with the
-# settings of the SKU2's last step (skills/walker/recipes/sku2/step4.sh) except the plant and the anchor.
+# Fine-tune the walker for the SKU1: continue the SKU2's fine-tuned walker on the SKU1's simulated plant and on rough
+# ground, held near the SKU2 walker over the whole command range. This recipe trained the shipped SKU1 walker
+# (skills/walker/checkpoints/sku1/walker/model_11792.pt: seed 210, 1000 iterations from model_10793).
 #
 #   sh skills/walker/recipes/sku1/finetune.sh [SEED] [PARENT] [ITERS]
 #
-# SEED defaults to 201, PARENT to skills/walker/checkpoints/sku2/walker/model_10793.pt (the SKU2's fine-tuned walker, a
+# SEED defaults to 210, PARENT to skills/walker/checkpoints/sku2/walker/model_10793.pt (the SKU2's fine-tuned walker, a
 # checkpoint with its run's config.json beside it), ITERS to 1000. Run from the repository root; output in
 # runs/walker_sku1. Environment: PYTHON (default .venv/bin/python), ENVS (robots, default 1024), OUT (the output
 # folder), ANCHOR (a policy folder; default: the SKU2's walker exported for the SKU1, made by this script in
@@ -15,16 +16,25 @@
 #
 #   .venv/bin/python -m mp4_rl.common.export --from-policy skills/walker/policies/sku2 runs/walker_sku1/anchor_sku1 --robot sku1
 #
-# The settings, as step4.sh except:
+# The settings, as the SKU2's last step (skills/walker/recipes/sku2/step4.sh) except:
 # - the SKU1 (--robot sku1): its model, calibration, weighed masses (sku1_masses_413g.json) and its joint limits traced
 #   on the robot, in walk mode;
+# - terrain: rough ground (relief, slopes, steps and boxes) instead of the narrow stairs;
+# - the anchor held over the whole command range (speeds up to 0.20 m/s, turns up to 2.0 rad/s, the turn while walking
+#   up to 1.0 rad/s) at weight 10;
 # - the get-up's self-collision on the walker's plant (legs against legs, the hip cans and the body: the short body
 #   puts the legs closer together);
 # - the SKU1's lidar (35 mm high, radius 19 mm, 47.2 g with its mount) on half the robots, its axis drawn 20 mm behind
 #   to 10 mm in front of the base origin and 10 mm either side;
 # - the whole robot's centre of mass drawn 61-70 mm above the floor (the weighed robot: 65.9 mm).
+#
+# The shipped walker's run used the same settings with the walk-mode joint limits estimated before the SKU1's legs were
+# traced (the SKU2's measured ranges at the SKU1's calibration); this recipe uses the traced limits, which the shipped
+# policy is exported for and runs with. The training is not bit-reproducible on a GPU, and runs of this recipe with other seeds came out weaker in
+# simulation than the shipped one: a new run gives a walker of its own, to be evaluated before use
+# (skills/walker/README.md).
 set -eu
-SEED=${1:-201}
+SEED=${1:-210}
 PARENT=${2:-skills/walker/checkpoints/sku2/walker/model_10793.pt}
 ITERS=${3:-1000}
 OUT=${OUT:-runs/walker_sku1}
@@ -39,9 +49,9 @@ fi
 # shellcheck disable=SC2086
 exec env -u PYTHONPATH PYTHONPATH="$PWD/src" WANDB_MODE=disabled MUJOCO_GL=egl "$PY" -B \
   -m mp4_rl.walker.train \
-  --resume "$PARENT" --anchor "$ANCHOR" --anchor-mask inrange --anchor-range 0.12 0.12 1.0 0.6 \
-  --beta0 5 --beta-hold 100000 --beta-decay 0 --critic-warmup 30 --lr0 1e-4 \
-  --terrain narrow --narrow-risers 0.025 0.045 --stair-exit --max-init-level 9 \
+  --resume "$PARENT" --anchor "$ANCHOR" --anchor-mask inrange --anchor-range 0.20 0.20 2.0 1.0 \
+  --beta0 10 --beta-hold 100000 --beta-decay 0 --critic-warmup 30 --lr0 1e-4 \
+  --terrain rough --max-init-level 9 \
   --foot-softness 0.005 0.02 --friction 0.4 1.3 --tilt-limit 1.0 \
   --clearance apex --clearance-weight -2 --stumble -0.5 --progress 2 --overspeed -2 --omni-promote-rel 0.8 \
   --heading-law pi --heading-wz 0.4 --vx-max 0.12 \

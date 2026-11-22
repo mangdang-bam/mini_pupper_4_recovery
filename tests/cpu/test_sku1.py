@@ -174,7 +174,8 @@ def test_the_sku1_walker_recipe_exports_its_anchor_first(tmp_path):
     assert argv[4:7] == ["skills/walker/policies/sku2", f"{out}/anchor_sku1", "--robot"]
     tr = argv[argv.index("mp4_rl.walker.train") + 1:]
     a = tw.build_parser().parse_args(tr)
-    assert (a.seed, a.iters, a.resume) == (201, 1000, "skills/walker/checkpoints/sku2/walker/model_10793.pt")
+    assert (a.seed, a.iters, a.resume) == (210, 1000, "skills/walker/checkpoints/sku2/walker/model_10793.pt")
+    assert a.terrain == "rough" and a.anchor_range == [0.2, 0.2, 2.0, 1.0] and a.beta0 == 10.0
     assert a.anchor == f"{out}/anchor_sku1" and a.robot == "sku1" and a.limits and a.leg_leg_contacts
     o = tw.walker_options(a, {"action_scale": [0.25, 0.5, 0.5] * 4, "history": 10}, 10793 * 24)
     assert o.robot == "sku1" and o.leg_leg_contacts and o.com_height_mm == (61.0, 70.0)

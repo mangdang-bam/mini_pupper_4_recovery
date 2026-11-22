@@ -1,6 +1,8 @@
 #!/bin/sh
 # Fine-tune the get-up for the SKU1: resume the get-up's starting checkpoint on the SKU1's simulated plant, with the
 # settings of the SKU2's get-up fine-tune (skills/getup/recipes/sku2/finetune.sh) except the plant and the load on top.
+# This recipe trained the shipped SKU1 get-up (skills/getup/checkpoints/sku1/getup/model_7543.pt: seed 71, 1000
+# iterations from model_6544).
 #
 #   sh skills/getup/recipes/sku1/finetune.sh [SEED] [PARENT] [ITERS]
 #
@@ -25,6 +27,9 @@
 #   (10.5-12.6 V) and winding resistance x0.95-1.15;
 # - PPO: learning rate 1e-5 to at most 5e-5, the critic warmed up for 30 iterations; the policy's std is the checkpoint's
 #   own (0.03; --init-std only sets a fresh actor's), clamped to 0.06-0.3 when sampling.
+#
+# The training is not bit-reproducible on a GPU: a new run gives a get-up of its own, to be evaluated before use
+# (skills/getup/README.md).
 set -eu
 SEED=${1:-71}
 PARENT=${2:-skills/getup/checkpoints/sku2/getup_start/model_6544.pt}
