@@ -25,7 +25,8 @@ def _meta(d: Path) -> dict:
 
 def _export(*args, cwd=REPO):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p.endswith("src"))
+    import mp4_sim
+    env["PYTHONPATH"] = os.pathsep.join([str(REPO), str(Path(mp4_sim.__file__).resolve().parents[1])])
     r = subprocess.run([PY, "-B", "-m", "mp4_rl.common.export", *map(str, args)], capture_output=True, text=True,
                        cwd=cwd, env=env)
     assert r.returncode == 0, r.stderr
@@ -33,7 +34,7 @@ def _export(*args, cwd=REPO):
 
 
 def test_the_sku2_walker_exported_for_the_sku1(tmp_path):
-    src = REPO / "skills/walker/policies/sku2"
+    src = REPO / "mp4_rl/skills/walker/policies/sku2"
     out = tmp_path / "walker_sku1"
     stdout = _export("--from-policy", src, out, "--robot", "sku1")
     assert "exporting for robot sku1: trained on sku2" in stdout
@@ -54,7 +55,7 @@ def test_the_sku2_walker_exported_for_the_sku1(tmp_path):
 
 def test_the_get_up_start_exported_for_the_sku1_with_its_traced_limits(tmp_path):
     out = tmp_path / "getup_sku1"
-    _export(REPO / "skills/getup/checkpoints/sku2/getup_start/model_6544.pt", out, "--robot", "sku1", "--limits")
+    _export(REPO / "mp4_rl/skills/getup/checkpoints/sku2/getup_start/model_6544.pt", out, "--robot", "sku1", "--limits")
     m = _meta(out)
     assert m["robot"] == "sku1" and m["kind"] == "getup" and m["limits"]
     assert m["bounds"]["info"]["hip_envelope"] == "sku1_hip_envelope.json"
@@ -104,8 +105,8 @@ def test_the_task_options_and_envs_on_the_sku1():
     from mp4_sim.robot.model import Legs, robot_z_shift
 
     from mp4_rl.common.env import TerrainOptions, describe, make_terrain_env_cfg
-    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
-    from mp4_rl.walker.task import WalkerOptions, make_walker_env_cfg
+    from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
+    from mp4_rl.skills.walker.task import WalkerOptions, make_walker_env_cfg
     assert TerrainOptions().masses_json == "sku2_masses.json" and TerrainOptions().robot == "sku2"
     assert TerrainOptions(robot="sku1").masses_json == "sku1_masses_413g.json"
     assert GetupOptions(robot="sku1").masses_json == "sku1_masses_413g.json"
@@ -150,11 +151,11 @@ def _recipe(tmp_path, rel, *args, **env):
 
 def test_the_sku1_get_up_recipe(tmp_path):
     pytest.importorskip("mjlab")
-    from mp4_rl.getup import train as tg
-    r, argv = _recipe(tmp_path, "skills/getup/recipes/sku1/finetune.sh")
+    from mp4_rl.skills.getup import train as tg
+    r, argv = _recipe(tmp_path, "mp4_rl/skills/getup/recipes/sku1/finetune.sh")
     assert r.returncode == 0, r.stderr
-    a = tg.parse_args(argv[argv.index("mp4_rl.getup.train") + 1:])
-    assert (a.seed, a.iters, a.resume) == (71, 1000, "skills/getup/checkpoints/sku2/getup_start/model_6544.pt")
+    a = tg.parse_args(argv[argv.index("mp4_rl.skills.getup.train") + 1:])
+    assert (a.seed, a.iters, a.resume) == (71, 1000, "mp4_rl/skills/getup/checkpoints/sku2/getup_start/model_6544.pt")
     assert a.robot == "sku1" and a.limits and a.display_collision and a.com_height_mm == [61.0, 70.0]
     o = tg.task_options(a)
     assert o.robot == "sku1" and o.display_collision and o.masses_json == "sku1_masses_413g.json"
@@ -165,16 +166,16 @@ def test_the_sku1_get_up_recipe(tmp_path):
 
 def test_the_sku1_walker_recipe_exports_its_anchor_first(tmp_path):
     pytest.importorskip("mjlab")
-    from mp4_rl.walker import train as tw
+    from mp4_rl.skills.walker import train as tw
     out = tmp_path / "out"
-    r, argv = _recipe(tmp_path, "skills/walker/recipes/sku1/finetune.sh", OUT=str(out))
+    r, argv = _recipe(tmp_path, "mp4_rl/skills/walker/recipes/sku1/finetune.sh", OUT=str(out))
     assert r.returncode == 0, r.stderr
     # first the anchor's export (the stub records it), then the trainer
     assert argv[:4] == ["-B", "-m", "mp4_rl.common.export", "--from-policy"]
-    assert argv[4:7] == ["skills/walker/policies/sku2", f"{out}/anchor_sku1", "--robot"]
-    tr = argv[argv.index("mp4_rl.walker.train") + 1:]
+    assert argv[4:7] == ["mp4_rl/skills/walker/policies/sku2", f"{out}/anchor_sku1", "--robot"]
+    tr = argv[argv.index("mp4_rl.skills.walker.train") + 1:]
     a = tw.build_parser().parse_args(tr)
-    assert (a.seed, a.iters, a.resume) == (210, 1000, "skills/walker/checkpoints/sku2/walker/model_10793.pt")
+    assert (a.seed, a.iters, a.resume) == (210, 1000, "mp4_rl/skills/walker/checkpoints/sku2/walker/model_10793.pt")
     assert a.terrain == "rough" and a.anchor_range == [0.2, 0.2, 2.0, 1.0] and a.beta0 == 10.0
     assert a.anchor == f"{out}/anchor_sku1" and a.robot == "sku1" and a.limits and a.leg_leg_contacts
     o = tw.walker_options(a, {"action_scale": [0.25, 0.5, 0.5] * 4, "history": 10}, 10793 * 24)
@@ -184,7 +185,7 @@ def test_the_sku1_walker_recipe_exports_its_anchor_first(tmp_path):
     # with ANCHOR given, no export
     other = tmp_path / "given"
     other.mkdir()
-    r, argv = _recipe(other, "skills/walker/recipes/sku1/finetune.sh", OUT=str(out), ANCHOR="x/anchor")
+    r, argv = _recipe(other, "mp4_rl/skills/walker/recipes/sku1/finetune.sh", OUT=str(out), ANCHOR="x/anchor")
     assert r.returncode == 0 and "mp4_rl.common.export" not in argv and argv[argv.index("--anchor") + 1] == "x/anchor"
 
 
@@ -196,11 +197,11 @@ def test_the_sku1_classic_gait_baseline_runs_on_the_sku1(tmp_path):
     from mp4_sim.robot.model import masses_path
 
     from mp4_rl.common.classic_gait import ClassicPolicy
-    from mp4_rl.walker.eval import omni
+    from mp4_rl.skills.walker.eval import omni
     out = tmp_path / "out"
-    r, argv = _recipe(tmp_path, "skills/walker/eval/sku1.sh", str(out), "classic_s21", WALKER="x")
+    r, argv = _recipe(tmp_path, "mp4_rl/skills/walker/eval/sku1.sh", str(out), "classic_s21", WALKER="x")
     assert r.returncode == 0, r.stderr
-    args = omni.make_parser().parse_args(argv[argv.index("mp4_rl.walker.eval.omni") + 1:])
+    args = omni.make_parser().parse_args(argv[argv.index("mp4_rl.skills.walker.eval.omni") + 1:])
     assert args.classic and args.robot == "sku1"
     plant = L.eval_plant(ClassicPolicy("cpu").meta, **L.eval_flags(args))
     assert plant["robot"] == "sku1"

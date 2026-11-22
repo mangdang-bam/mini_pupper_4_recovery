@@ -10,9 +10,7 @@ import importlib
 import json
 import os
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
 MP4_SIM_VERSION = "0.2.0"
 CPU_MODULES = ["numpy", "scipy", "serial", "mujoco", "torch", "mp4_sim", "mp4_rl"]
 GPU_MODULES = CPU_MODULES + ["warp", "mujoco_warp", "mjlab", "rsl_rl"]
@@ -36,10 +34,12 @@ def policy_hashes() -> list:
     import numpy as np
     from mp4_sim import paths, robots
 
+    from mp4_rl import skills
+
     out = []
-    for folder in sorted((ROOT / "skills").glob("*/policies/sku[12]")):
-        r = robots.get(folder.name)
-        name = f"{folder.parent.parent.name} {folder.name}"
+    for skill, robot, folder in skills.shipped():
+        r = robots.get(robot)
+        name = f"{skill} {robot}"
         if not (folder / "policy.npz").is_file():
             out.append((name, "no policy.npz"))
             continue

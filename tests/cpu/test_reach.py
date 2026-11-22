@@ -3,7 +3,7 @@ import numpy as np
 
 from mp4_rl.common import bounds as limits
 from mp4_rl.common.policy import Contract
-from mp4_rl.getup.eval import reach
+from mp4_rl.skills.getup.eval import reach
 
 C = Contract.load()
 

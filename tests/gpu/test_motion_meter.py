@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from mp4_rl.getup.eval import motion_meter as M  # noqa: E402
+from mp4_rl.skills.getup.eval import motion_meter as M  # noqa: E402
 
 DT = M.DT
 
@@ -126,7 +126,7 @@ def _env(n, seed=3):
     from mjlab.envs import ManagerBasedRlEnv
 
     from mp4_rl.common.env import noise_profile
-    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
+    from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
     opt = GetupOptions(num_envs=n, noise_end=noise_profile(), band_deg=(90.0, 180.0, 180.0),
                        limits=True, fixed_starts=("random",), episode_s=1.0e3)
     cfg = make_getup_env_cfg(opt)
@@ -139,7 +139,7 @@ def test_meter_on_robots_on_their_backs():
     the get-up window, the reversal rate 2 x 3 per s at 5 and 10 deg, the target-change cost is the decoder's applied
     actions'; the base rests on the floor (its weight-scale force), and detach restores the physics step."""
     from mp4_rl.common import mdp
-    from mp4_rl.getup.eval import getup_eval as ev
+    from mp4_rl.skills.getup.eval import getup_eval as ev
     n, f, steps = 8, 3.0, 150
     env = _env(n)
     act = mdp.servo_action(env)
@@ -175,7 +175,7 @@ def test_meter_on_robots_on_their_backs():
 
 def test_getup_eval_carries_the_motion_block():
     """run_start(meter=...) puts the motion summary into the start's summary and per-trial arrays of length n."""
-    from mp4_rl.getup.eval import getup_eval as ev
+    from mp4_rl.skills.getup.eval import getup_eval as ev
     n = 4
     env = _env(n)
     meter = M.MotionMeter(env)
@@ -189,8 +189,8 @@ def test_getup_eval_carries_the_motion_block():
 
 def test_getup_eval_feeds_the_reach_meter():
     """run_start(reach=...) measures every robot at every step after the spawn's drop, in the proven reach's terms."""
-    from mp4_rl.getup.eval import getup_eval as ev
-    from mp4_rl.getup.eval import reach
+    from mp4_rl.skills.getup.eval import getup_eval as ev
+    from mp4_rl.skills.getup.eval import reach
     env = _env(4)
     meter = reach.ReachMeter()
     pol = lambda obs: torch.zeros(obs.shape[0], 12, device=obs.device)       # noqa: E731

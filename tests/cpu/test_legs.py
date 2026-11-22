@@ -46,7 +46,7 @@ def model_hash(m: mujoco.MjModel) -> str:
 @pytest.mark.skipif(mujoco.__version__ != "3.7.0", reason="hashes pinned with MuJoCo 3.7.0")
 @pytest.mark.parametrize("legs", FEET, ids=("sphere", "mesh"))
 def test_compiled_models_are_pinned(legs):
-    from mp4_rl.getup.task import CONTACT_SOLREF, THIGH_SHORT_M, _spec_fn
+    from mp4_rl.skills.getup.task import CONTACT_SOLREF, THIGH_SHORT_M, _spec_fn
     want = HASHES[legs.foot]
     assert model_hash(sku2.get_spec(**WALKER, legs=legs).compile()) == want["walker"]
     assert model_hash(sku2.get_spec(**WALKER, limits=True, legs=legs).compile()) == want["walker_limits"]
@@ -93,7 +93,7 @@ def _table(m):
 
 
 def test_the_feet_differ_only_in_the_foot_geoms():
-    from mp4_rl.getup.task import getup_collisions
+    from mp4_rl.skills.getup.task import getup_collisions
     a, b = (sku2.get_spec(**WALKER, limits=True, legs=legs) for legs in FEET)
     getup_collisions(a)
     getup_collisions(b)

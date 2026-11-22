@@ -12,8 +12,8 @@ from mp4_rl import paths
 from mp4_rl.common import policy as cmod
 from mp4_rl.common import policy_file
 from mp4_rl.common.policy import CONTRACT_JSON, Contract
-from mp4_rl.getup.runner import checks
-from mp4_rl.getup.runner import runner as rn
+from mp4_rl.deploy.runner import checks
+from mp4_rl.deploy.runner import runner as rn
 
 # A fixed TEST calibration (offsets -12, 8, -16, 6, -36, -42, -8, 25, 4, 17, 7, 19; not the packaged contract's). The fake
 # robot, the runner, the link and the tools are tested against it, so that a new calibration of the real robot (a new

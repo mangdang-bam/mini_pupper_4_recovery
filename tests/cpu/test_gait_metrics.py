@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from mp4_rl.walker.eval import gait_metrics as gm
+from mp4_rl.skills.walker.eval import gait_metrics as gm
 
 
 def pattern(T, period, duty, offsets):

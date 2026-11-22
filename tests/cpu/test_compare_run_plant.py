@@ -54,7 +54,7 @@ def test_masses_json_path_made_absolute_and_unknown_refused(monkeypatch, tmp_pat
 
 def test_build_passes_the_plant_to_getup_eval(monkeypatch):
     from mp4_rl.common import built_env
-    from mp4_rl.getup.eval import getup_eval as ge
+    from mp4_rl.skills.getup.eval import getup_eval as ge
     got = {}
 
     def build(pdir, robots, seed, **kw):

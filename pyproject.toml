@@ -40,11 +40,15 @@ gpu = [
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mp4_rl"]
+# The package holds the bank of policies: each folder under mp4_rl/skills/ carries its code with its recipes, exported
+# policies, checkpoints and evaluation scripts, so an installed wheel and a checkout find them in the same place. The
+# animations stay in the source tree.
+packages = ["mp4_rl"]
+exclude = ["mp4_rl/skills/*/media"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]

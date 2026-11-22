@@ -7,7 +7,7 @@ import numpy as np
 from fake_esp32 import fall_and_rise, roll
 from robot_helpers import RAMP_TICKS, ROBOT_META, C, go
 
-from mp4_rl.getup.runner import runner as rn
+from mp4_rl.deploy.runner import runner as rn
 
 POLICY_START = RAMP_TICKS + 4
 

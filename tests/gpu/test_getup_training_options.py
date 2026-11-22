@@ -15,7 +15,7 @@ from mp4_sim.envs.attachment import (
 )
 from mp4_sim.robot import model as sku2
 
-from mp4_rl.getup.task import GetupOptions, getup_collisions, stiff_contacts
+from mp4_rl.skills.getup.task import GetupOptions, getup_collisions, stiff_contacts
 
 
 def _bare_spec():
@@ -103,7 +103,7 @@ def test_principal_rebuilds_the_tensor():
 def test_the_options_are_off_by_default():
     o = GetupOptions()
     assert o.attachment is None and o.rollover_cost == 0.0 and tuple(o.midfall_omega) == (2.0, 6.0)
-    from mp4_rl.getup.task import make_getup_env_cfg
+    from mp4_rl.skills.getup.task import make_getup_env_cfg
     cfg = make_getup_env_cfg(GetupOptions(num_envs=1))
     assert "attachment" not in cfg.events and "rollover" not in cfg.rewards
     assert GEOM not in [g.name for g in cfg.scene.entities["robot"].spec_fn().geoms]
@@ -114,7 +114,7 @@ def _env(n, seed=3, **kw):
     from mjlab.envs import ManagerBasedRlEnv
 
     from mp4_rl.common.env import noise_profile
-    from mp4_rl.getup.task import make_getup_env_cfg
+    from mp4_rl.skills.getup.task import make_getup_env_cfg
     cfg = make_getup_env_cfg(GetupOptions(num_envs=n, noise_end=noise_profile(), **kw))
     cfg.seed = seed
     return ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
@@ -127,7 +127,7 @@ def _ids(env, geom=False):
 
 
 def test_the_cylinders_top_per_robot_matches_the_draw():
-    from mp4_rl.getup.task import contact_penetration
+    from mp4_rl.skills.getup.task import contact_penetration
     n = 32
     env = _env(n, attachment=Attachment(), start_joints="stand", fixed_iter=0)
     env.reset()
@@ -199,7 +199,7 @@ def test_a_fixed_attachment_changes_no_other_draw():
 
 def _start(env, tilts):
     """Each env's start: a slice's name, or a roll in degrees."""
-    from mp4_rl.getup.task import SLICES
+    from mp4_rl.skills.getup.task import SLICES
     n, dev = env.num_envs, env.device
     term = env.event_manager.get_term_cfg("getup_start").func
     exact = torch.full((n, 2), float("nan"), device=dev)
@@ -219,7 +219,7 @@ def _rollover(env):
 
 
 def test_the_rollover_cost_charges_a_fall_past_130_and_never_a_back_start():
-    from mp4_rl.getup.task import tilt_deg
+    from mp4_rl.skills.getup.task import tilt_deg
     starts = ["midfall", "midfall", "crouch", 90.0, 99.0, 110.0, 150.0, 180.0]
     n = len(starts)
     env = _env(n, rollover_cost=2.0, start_joints="stand", fixed_iter=0, spawn_z=(0.2, 0.2))
@@ -260,7 +260,7 @@ def test_the_rollover_cost_follows_each_episodes_own_start():
 
 
 def test_the_midfall_rotation_range_is_the_options():
-    from mp4_rl.getup.task import SLICES
+    from mp4_rl.skills.getup.task import SLICES
     n = 64
     env = _env(n, fixed_iter=0, midfall_omega=(10.0, 13.0))
     term = env.event_manager.get_term_cfg("getup_start").func

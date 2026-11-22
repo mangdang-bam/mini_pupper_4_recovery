@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This software includes or builds on:
 - RSL-RL (ETH Zurich and NVIDIA, BSD 3-Clause License; https://github.com/leggedrobotics/rsl_rl): the PPO updates in
-  src/mp4_rl/common/algorithms.py and src/mp4_rl/common/anchor_ppo.py are derived from rsl-rl-lib 5.0.1's
+  mp4_rl/common/algorithms.py and mp4_rl/common/anchor_ppo.py are derived from rsl-rl-lib 5.0.1's
   rsl_rl/algorithms/ppo.py. Its licence text is in licenses/RSL-RL.txt.
 - mini_pupper_4_sim (Apache License 2.0; https://github.com/mangdangroboticsclub/mini_pupper_4_sim): the robot models,
   their measured data, the servo models and the simulation scenes this package trains and evaluates on, used as an
@@ -14,7 +14,7 @@ This software includes or builds on:
   (sku1_contract.json, sku1_joint_limits.json).
 - Mini Pupper v4 firmware (minipupper_4_mcu, MangDang, Apache License 2.0;
   https://github.com/mangdangroboticsclub/minipupper_4_mcu), commit d2720006a795360506fb29713c7fc080329fc098 (on its
-  main and firmware-dev branches): src/mp4_rl/common/data/classic_gait/stanford_gait.{h,cc} and
+  main and firmware-dev branches): mp4_rl/common/data/classic_gait/stanford_gait.{h,cc} and
   stanford_kinematics.{h,cc} are unchanged copies of its main/robot/ files of the same names, the classic trot gait and
   inverse kinematics, used as the walker's baseline in simulation. Their headers name minipupperesp, the earlier ESP32
   firmware they were first written for. classic_host.c beside them is this repository's own: it runs them on the host.

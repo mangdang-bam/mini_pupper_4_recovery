@@ -5,9 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mp4_rl.getup.mp4link import protocol as p
-from mp4_rl.getup.runner import estimators as es
-from mp4_rl.getup.runner import runner as rn
+from mp4_rl.deploy.mp4link import protocol as p
+from mp4_rl.deploy.runner import estimators as es
+from mp4_rl.deploy.runner import runner as rn
 
 ROLL_DPS = 300.0                # the scripted falls: 90 deg in 0.3 s
 DATA = Path(__file__).resolve().parent / "data"

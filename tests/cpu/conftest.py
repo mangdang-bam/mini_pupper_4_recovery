@@ -1,7 +1,7 @@
 import pytest
 from robot_helpers import fixed_calibration, packaged_robot, robot  # noqa: F401
 
-from mp4_rl.getup.runner import runner
+from mp4_rl.deploy.runner import runner
 
 
 @pytest.fixture(autouse=True)

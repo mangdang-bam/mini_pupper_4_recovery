@@ -14,8 +14,8 @@ pytest.importorskip("rsl_rl")
 import torch  # noqa: E402
 
 from mp4_rl.common import anchor_ppo  # noqa: E402
-from mp4_rl.walker import task as wtask  # noqa: E402
-from mp4_rl.walker import train as tw  # noqa: E402
+from mp4_rl.skills.walker import task as wtask  # noqa: E402
+from mp4_rl.skills.walker import train as tw  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = {"action_scale": [0.25, 0.5, 0.5] * 4, "history": 10}
@@ -105,10 +105,10 @@ def recipe_argv(tmp_path, name, *args):
     stub = tmp_path / "py"
     stub.write_text(f'#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done > {dump}\n')
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-    subprocess.run(["sh", str(REPO / "skills/walker/recipes/sku2" / name), *args], check=True, cwd=REPO,
+    subprocess.run(["sh", str(REPO / "mp4_rl/skills/walker/recipes/sku2" / name), *args], check=True, cwd=REPO,
                    env={**os.environ, "PYTHON": str(stub)})
     argv = dump.read_text().splitlines()
-    a = tw.build_parser().parse_args(argv[argv.index("mp4_rl.walker.train") + 1:])
+    a = tw.build_parser().parse_args(argv[argv.index("mp4_rl.skills.walker.train") + 1:])
     return a, tw.walker_options(a, SRC, 6297 * 24)
 
 
@@ -278,7 +278,7 @@ def test_yaw_hold_term():
 def test_recipe_step2_and_step3_argv(tmp_path, n):
     a, o = recipe_argv(tmp_path, f"step{n}.sh", "71", "/abs/prev/model_7296.pt")
     assert a.resume == "/abs/prev/model_7296.pt"
-    assert a.anchor == "skills/walker/checkpoints/sku2/walker_start/model_6297.pt" and a.anchor_mask == "inrange"
+    assert a.anchor == "mp4_rl/skills/walker/checkpoints/sku2/walker_start/model_6297.pt" and a.anchor_mask == "inrange"
     assert (a.iters, a.save_at, a.cmd_ramp, a.topple_start_iter) == ((1500, 1000)[n - 2], [500, 1000, 1500], 0, 0)
     assert o.spin_wz_max == (1.0, 2.0) and o.fwd_vx_range == (0.12, 0.20) and o.cmd_fast_share == 0.4
     assert o.yaw_hold_weight == 1.0 and o.spin_progress_weight == 0.0
@@ -330,7 +330,7 @@ def test_yaw_sign_stats_block():
 
 def test_recipe_step4_argv(tmp_path):
     a, o = recipe_argv(tmp_path, "step4.sh", "91", "/abs/prev/model_9794.pt")
-    assert a.anchor == "skills/walker/checkpoints/sku2/walker_start/model_6297.pt" and a.tag == "step4" and a.seed == 91
+    assert a.anchor == "mp4_rl/skills/walker/checkpoints/sku2/walker_start/model_6297.pt" and a.tag == "step4" and a.seed == 91
     assert (a.iters, a.save_at) == (1000, [500, 1000])
     assert wtask.mix_shares(o) == (0.20, 0.25, 0.40, 0.05, 0.10) and o.fast_wz == (1.0, 2.0)
     assert (o.cmd_fast_share, o.yaw_zero_share, o.yaw_hold_weight, o.spin_progress_weight) == (0.4, 0.3, 2.0, 1.0)

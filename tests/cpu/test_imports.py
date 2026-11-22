@@ -4,8 +4,8 @@ import importlib
 import pytest
 
 MODULES = ("paths", "common.policy", "common.bounds", "common.heading", "common.obs_norm", "common.policy_file",
-           "common.export", "common.actor", "common.built_env", "getup.eval.reach", "getup.runner.runner",
-           "getup.runner.checks", "getup.mp4link.cli")
+           "common.export", "common.actor", "common.built_env", "skills.getup.eval.reach", "deploy.runner.runner",
+           "deploy.runner.checks", "deploy.mp4link.cli", "skills")
 
 
 @pytest.mark.parametrize("name", MODULES)

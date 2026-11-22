@@ -251,7 +251,7 @@ def test_torch_offset_equals_a_shifted_stand():
 def test_export_meta_carries_bounds_and_offset(tmp_path):
     from mp4_rl.common.actor import mlp
     from mp4_rl.common.policy_file import NumpyPolicy, export, with_meta
-    from mp4_rl.getup.runner.runner import band_refusal
+    from mp4_rl.deploy.runner.runner import band_refusal
     sd = {f"mlp.{k}": v for k, v in mlp(45, 12, (64, 32)).state_dict().items()}
     ck = tmp_path / "m.pt"
     torch.save({"actor_state_dict": sd}, ck)
@@ -287,7 +287,7 @@ def test_eval_plant_flags_and_meta():
     assert L.eval_plant({}, True, 12) == {**plain, "limits": True, "stand_offset_abd_deg": 12.0}
     wide = {"limits": True, "bounds": {"info": {"widen_limits_deg": 60.0}}}
     assert L.eval_plant(wide)["widen_limits_deg"] == 60.0
-    from mp4_rl.walker.eval import omni as oe
+    from mp4_rl.skills.walker.eval import omni as oe
     pol = SimpleNamespace(scale=[0.25] * 12, meta={})
     kw = oe.env_kwargs(pol, 8, "flat")
     assert kw["limits"] is False and kw["stand_offset_abd_deg"] == 0.0
@@ -298,7 +298,7 @@ def test_eval_plant_flags_and_meta():
 def test_terrain_and_getup_options_wire_the_limits():
     from mp4_rl.common import env as tt
     from mp4_rl.common.env import describe
-    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
+    from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
     off = tt.make_terrain_env_cfg(tt.TerrainOptions(terrain="flat", rows=2))
     assert off.actions["servo"].bounds is None and off.actions["servo"].stand_offset_abd_deg == 0.0
     on = tt.make_terrain_env_cfg(tt.TerrainOptions(terrain="flat", rows=2, limits=True,
@@ -402,7 +402,7 @@ def test_getup_starts_are_inside_the_bounds():
 
     from mp4_rl.common import mdp
     from mp4_rl.common.env import noise_profile
-    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
+    from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
     opt = GetupOptions(num_envs=32, noise_end=noise_profile(), limits=True)
     cfg = make_getup_env_cfg(opt)
     cfg.seed = 3
@@ -428,7 +428,7 @@ def test_sequence_with_limits_and_a_walker_offset(tmp_path):
     _sys.path.insert(0, str(REPO / "tools"))
     from test_sequence import WALKER, zero_getup
 
-    from mp4_rl.getup.eval import sequence as sc
+    from mp4_rl.skills.getup.eval import sequence as sc
     g = zero_getup(tmp_path / "getup")
     out = tmp_path / "sim.json"
     rc = sc.main(["--walker", str(WALKER), "--getup", str(g), "--robots", "4", "--seconds", "5", "--kick", "0",

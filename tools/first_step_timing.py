@@ -2,7 +2,7 @@
 """Measure the gap in SET_ALL frames across the walking policy's first step, without motors or a robot: the runner against a fake
 board on a pseudo-terminal, in a fresh process per start, as a real launch is. The firmware disarms 100 ms after the last frame.
 
-    env PYTHONPATH=src python3 -B tools/first_step_timing.py --starts 10
+    env PYTHONPATH=. python3 -B tools/first_step_timing.py --starts 10
 
 ``plain`` runs without the two safeguards around the first step (``Runner.warm_up``, ``Runner.keep_fed``); ``safeguarded`` is
 the runner as it ships. Per start it prints the gap, how long the first step took from its STATE frame to its SET_ALL, and whether the
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def child(mode: str, port: str, log: str) -> int:
-    from mp4_rl.getup.runner import runner as rn
+    from mp4_rl.deploy.runner import runner as rn
     rn.HOLD_AFTER_S = 0.1
     if mode == "plain":
         rn.Runner.warm_up = lambda *a, **k: None
@@ -42,8 +42,8 @@ def one_start(mode: str, tmp: Path, n: int) -> dict:
     from fake_esp32 import FakeRobot
 
     from mp4_rl.common.policy import Contract
-    from mp4_rl.getup.runner import runner as rn
-    cal = ROOT / "skills" / "walker" / "policies" / "sku2" / "sku2_contract.json"     # the default policies' calibration
+    from mp4_rl.deploy.runner import runner as rn
+    cal = ROOT / "mp4_rl" / "skills" / "walker" / "policies" / "sku2" / "sku2_contract.json"     # the default policies' calibration
     board = FakeRobot(Contract.load(cal), rn.load_mount()[1], rn.IDENTIFIED)
     log = tmp / f"{mode}_{n}"
     p = subprocess.run([sys.executable, "-B", __file__, "--child", mode, board.port, str(log)], capture_output=True, text=True)

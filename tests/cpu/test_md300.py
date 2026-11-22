@@ -26,8 +26,8 @@ POINTS = [(math.radians(0.05), 0.0), (math.radians(0.1), 0.0), (math.radians(0.5
 
 
 def test_robot_gains_match_the_deploy_code():
-    from mp4_rl.getup.mp4link.cli import GAINS
-    from mp4_rl.getup.runner import runner
+    from mp4_rl.deploy.mp4link.cli import GAINS
+    from mp4_rl.deploy.runner import runner
     assert GAINS["control_mode"] == 1.0
     assert (GAINS["kp_position"], GAINS["kd_position"], GAINS["kff_current"], GAINS["max_pwm_duty_cycle"]) == \
         (choice.ROBOT_KP, choice.ROBOT_KD, choice.ROBOT_KFF, choice.ROBOT_MAX_PWM)

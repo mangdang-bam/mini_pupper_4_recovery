@@ -81,8 +81,8 @@ def test_record_fake_env(tmp_path):
 
 def test_train_masses_json(tmp_path):
     pytest.importorskip("mjlab")
-    from mp4_rl.getup import train
-    from mp4_rl.getup.task import GetupOptions
+    from mp4_rl.skills.getup import train
+    from mp4_rl.skills.getup.task import GetupOptions
     f = masses_file(tmp_path)
     assert train.task_options(train.parse_args([])).masses_json == GetupOptions.masses_json   # default unchanged
     o = train.task_options(train.parse_args(["--masses-json", str(f), "--legs", "sku_2", "--actuator", "md300",
@@ -94,7 +94,7 @@ def test_train_masses_json(tmp_path):
 
 def test_terrain_eval_flags(tmp_path):
     pytest.importorskip("mjlab")
-    from mp4_rl.walker.eval import terrain as te
+    from mp4_rl.skills.walker.eval import terrain as te
     f = masses_file(tmp_path)
     a = te.make_parser().parse_args(["--policy", "p", "--masses-json", str(f), "--attachment", ATT, "--legs", "sku_2",
                                      "--actuator", "md300"])
@@ -106,7 +106,7 @@ def test_terrain_eval_flags(tmp_path):
 @pytest.mark.parametrize("mod", ["omni", "push"])
 def test_attachment_flag(mod):
     pytest.importorskip("mjlab")
-    m = importlib.import_module(f"mp4_rl.walker.eval.{mod}")
+    m = importlib.import_module(f"mp4_rl.skills.walker.eval.{mod}")
     assert m.make_parser().parse_args(["--policy", "p", "--attachment", ATT]).attachment.mass_g == (43.2, 43.2)
     assert m.make_parser().parse_args(["--policy", "p"]).attachment is None
 
@@ -114,7 +114,7 @@ def test_attachment_flag(mod):
 def test_omni_build_passes_attachment(monkeypatch):
     """omni_eval's build hands the attachment to terrain_eval.build (which installs it last)."""
     pytest.importorskip("mjlab")
-    from mp4_rl.walker.eval import omni as oe
+    from mp4_rl.skills.walker.eval import omni as oe
     seen = {}
 
     def fake_build(opt, render=False, seed=None, camera=None, attachment=None):

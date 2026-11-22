@@ -1,7 +1,7 @@
 # The policy interface
 
 What a policy observes and what its output does on a Mini Pupper v4. The interface is the same for the SKU2 and the SKU1;
-the shipped policies and the runner are the SKU2's. `src/mp4_rl/common/policy.py` (with `mp4_sim.calibration`) is the reference
+the shipped policies and the runner are the SKU2's. `mp4_rl/common/policy.py` (with `mp4_sim.calibration`) is the reference
 implementation (numpy only, imported by the runner on the Pi); the training environment implements the same arithmetic in
 torch (`common/mdp.py`), and `tests/` checks that the two agree. If the interface changes, this document, `common/policy.py` and the
 exporter change together.
@@ -10,12 +10,12 @@ The per-robot numbers (servo signs, stand pose, calibration offsets) live in the
 (`mp4_sim`'s SKU2 measured data; each policy folder carries a copy). That file's name, the meta key `contract_sha256`
 (its hash) and the export's `--contract` option all mean the calibration file.
 
-`.venv/bin/python -m mp4_rl.getup.runner check --policy skills/<name>/policies/sku2` checks an exported policy against this document (see
+`.venv/bin/python -m mp4_rl.deploy.runner check --policy mp4_rl/skills/<name>/policies/sku2` checks an exported policy against this document (see
 [Checking a policy](#checking-a-policy)).
 
 ## The two policies
 
-| | `skills/walker/policies/sku2` | `skills/getup/policies/sku2` |
+| | `mp4_rl/skills/walker/policies/sku2` | `mp4_rl/skills/getup/policies/sku2` |
 |---|---|---|
 | Meta `kind` | `walk` | `getup` |
 | Inputs | 450 (10 frames, history 10) | 45 (1 frame, history 0) |
@@ -233,7 +233,7 @@ runner compares the names and the hash, never the path. No value is a path on an
 ## Checking a policy
 
 ```sh
-.venv/bin/python -m mp4_rl.getup.runner check --policy skills/getup/policies/sku2
+.venv/bin/python -m mp4_rl.deploy.runner check --policy mp4_rl/skills/getup/policies/sku2
 ```
 
 Needs no robot and no port. It checks:

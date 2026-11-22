@@ -7,8 +7,8 @@ import torch
 from mp4_sim.envs import terrain as tm
 from mp4_sim.envs import terrain_spawn as ts
 
-from mp4_rl.getup.eval import getup_eval as ge
-from mp4_rl.getup.task import (
+from mp4_rl.skills.getup.eval import getup_eval as ge
+from mp4_rl.skills.getup.task import (
     TERRAIN_FAMILIES,
     TERRAIN_ROWS,
     GetupOptions,
@@ -162,7 +162,7 @@ def test_terrain_summary_and_cells():
 
 
 def test_evaluator_fails_a_robot_that_blows_up_and_does_not_retry_it():
-    pdir = REPO / "skills" / "getup" / "policies" / "sku2"
+    pdir = REPO / "mp4_rl" / "skills" / "getup" / "policies" / "sku2"
     env, opt = ge.build(pdir, 16, 12, terrain=ge.terrain_kwargs(["low_poly"], [1]))
     pol = ge.TorchPolicy(pdir / "policy.npz", "cuda:0")
     robot = env.scene["robot"]

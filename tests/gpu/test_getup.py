@@ -8,7 +8,7 @@ import torch
 from mp4_sim.robot import model as sku2
 
 from mp4_rl.common.policy import Contract
-from mp4_rl.getup.task import (
+from mp4_rl.skills.getup.task import (
     MIX_END,
     MIX_START,
     SLICES,
@@ -119,7 +119,7 @@ def test_getup_collision_pairs_and_the_stand_is_overlap_free():
     crossed = _stand(m, d, {"FR_hip": -math.radians(45), "FL_hip": math.radians(45)})   # both front legs inward
     assert ("FR_calf", "FL_calf") in crossed or ("FL_calf", "FR_calf") in crossed, crossed
     # stiffer contacts for every robot geom but the feet (priority 2 over the feet's 1 and the floor's 0)
-    from mp4_rl.getup.task import CONTACT_SOLREF, stiff_contacts
+    from mp4_rl.skills.getup.task import CONTACT_SOLREF, stiff_contacts
     spec2 = sku2.get_spec(strip_visuals=True, self_collision=True)
     getup_collisions(spec2)
     assert stiff_contacts(spec2) == 2 + 4 + 8                                    # 2 base boxes, 4 cans, 8 capsules
@@ -141,7 +141,7 @@ def _env(n, **kw):
     from mjlab.envs import ManagerBasedRlEnv
 
     from mp4_rl.common.env import noise_profile
-    from mp4_rl.getup.task import make_getup_env_cfg
+    from mp4_rl.skills.getup.task import make_getup_env_cfg
     opt = GetupOptions(num_envs=n, noise_end=noise_profile(), **kw)
     cfg = make_getup_env_cfg(opt)
     cfg.seed = 3
@@ -150,7 +150,7 @@ def _env(n, **kw):
 
 def test_start_proportions_at_iterations_0_and_1000_and_overlap_free_spawns():
     from mp4_rl.common import mdp
-    from mp4_rl.getup.task import contact_penetration, tilt_deg
+    from mp4_rl.skills.getup.task import contact_penetration, tilt_deg
     n = 1024
     env = _env(n, fixed_iter=0)
     term = env.event_manager.get_term_cfg("getup_start").func
@@ -229,7 +229,7 @@ def test_band_and_scale_are_applied_per_joint():
 def test_self_collisions_on_the_gpu():
     """MJWarp makes the contacts: none at the stand, the two front shins when both legs abduct inward 45 deg."""
     from mp4_rl.common import mdp
-    from mp4_rl.getup.task import spawn_overlaps
+    from mp4_rl.skills.getup.task import spawn_overlaps
     env = _env(4, start_joints="stand", fixed_iter=0)
     env.reset()
     robot, act = env.scene["robot"], mdp.servo_action(env)
@@ -253,7 +253,7 @@ def test_self_collisions_on_the_gpu():
 
 
 def test_bounded_gaussian_clamps_the_std():
-    from mp4_rl.getup.task import BoundedGaussianDistribution
+    from mp4_rl.skills.getup.task import BoundedGaussianDistribution
     d = BoundedGaussianDistribution(3, init_std=1.0, std_min=0.05, std_max=0.5)
     d.update(torch.zeros(2, 3))
     assert torch.allclose(d._distribution.stddev, torch.full((2, 3), 0.5))
@@ -322,7 +322,7 @@ def test_midfall_starts_rotate_into_the_fall_without_penetration():
     """Mid-fall starts: near the stand, tilted 40-70 deg, rotating 2-6 rad/s further about the tilt axis, the base
     moving as that rotation about the feet, no geom touching the floor at the spawn; the fall then continues."""
     from mp4_rl.common import mdp
-    from mp4_rl.getup.task import STAND_Z, contact_penetration, tilt_deg
+    from mp4_rl.skills.getup.task import STAND_Z, contact_penetration, tilt_deg
     n = 256
     env = _env(n, fixed_iter=0, midfall=1.0)
     term = env.event_manager.get_term_cfg("getup_start").func
@@ -359,7 +359,7 @@ def test_nonfinite_guard_sanitises_logs_and_resets(tmp_path):
     step as a time-out, counted under Episode_Termination/nonfinite; a NaN in a sensor buffer resets in the same step."""
     import json
 
-    from mp4_rl.getup.task import NonfiniteGuard
+    from mp4_rl.skills.getup.task import NonfiniteGuard
     env = _env(4, start_joints="stand", fixed_iter=0)
     env.termination_manager.get_term_cfg("nonfinite").func.log_path = str(tmp_path / "nf.jsonl")
     guard = env.termination_manager.get_term_cfg("nonfinite").func

@@ -149,7 +149,7 @@ def test_parse_run_fixture_and_real_series():
 
 
 def test_fixture_actions_reproduce_and_gravity_clean():
-    from mp4_rl.getup.runner.runner import load_mount
+    from mp4_rl.deploy.runner.runner import load_mount
     run = tc.load_run(DATA / "fake_left")
     w = tc.getup_window(run)
     real = tc.real_series(run, w)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Compare a real robot run with the simulation, within a minute or two per run.
 
-    .venv/bin/python tools/compare_run.py stream LOG.npz --stream FILE.npz --policy skills/getup/policies/sku2 [--slow] [--json OUT]
-    .venv/bin/python tools/compare_run.py floor  RUN_PREFIX --policy skills/getup/policies/sku2 [--robots 64] [--json OUT]
-    .venv/bin/python tools/compare_run.py obs    RUN_PREFIX --policy skills/getup/policies/sku2 [--json OUT]
-    .venv/bin/python tools/compare_run.py predict --stream FILE.npz --policy skills/getup/policies/sku2 [--cap 2000] [--json OUT]
+    .venv/bin/python tools/compare_run.py stream LOG.npz --stream FILE.npz --policy mp4_rl/skills/getup/policies/sku2 [--slow] [--json OUT]
+    .venv/bin/python tools/compare_run.py floor  RUN_PREFIX --policy mp4_rl/skills/getup/policies/sku2 [--robots 64] [--json OUT]
+    .venv/bin/python tools/compare_run.py obs    RUN_PREFIX --policy mp4_rl/skills/getup/policies/sku2 [--json OUT]
+    .venv/bin/python tools/compare_run.py predict --stream FILE.npz --policy mp4_rl/skills/getup/policies/sku2 [--cap 2000] [--json OUT]
 
 Exit code: 0 clean / pass, 1 a failed check, 2 refused. A policy's ``config.json`` gives the plant (``getup_eval.build``:
 noise at its end amplitudes, friction, center of mass, mass and command delay randomised; contact softness is the run's fixed
@@ -458,7 +458,7 @@ class Rig:
             self.wp.to_torch(d.qvel)[:, :6] = 0.0
         self.count += 1
         if self.count % self.every == 0:
-            from mp4_rl.walker.eval.terrain import bam_currents
+            from mp4_rl.skills.walker.eval.terrain import bam_currents
             r = self.env.scene["robot"].data
             self.t.append(self.count * float(self.env.sim.mj_model.opt.timestep))
             self.pos.append(self.phys_rel().cpu().numpy())
@@ -505,7 +505,7 @@ def plant_of(a) -> dict:
 def _build(pdir, robots: int, seed: int, device: str, plant: dict | None):
     """``getup_eval.build`` with the plant flags; returns (env, opt, the built env's record)."""
     from mp4_rl.common import built_env
-    from mp4_rl.getup.eval import getup_eval as ge
+    from mp4_rl.skills.getup.eval import getup_eval as ge
     plant = plant or {}
     env, opt = ge.build(Path(pdir), robots, seed, device=device, actuator=plant.get("actuator") or None,
                         legs=plant.get("legs") or None, masses_json=plant.get("masses_json"))
@@ -522,7 +522,7 @@ def sim_held(pdir, rows_rel_deg, start_rel_deg, cap_ma: int, robots: int, seed: 
     import torch
     import warp as wp
 
-    from mp4_rl.getup.eval import getup_eval as ge
+    from mp4_rl.skills.getup.eval import getup_eval as ge
 
     env, opt, built = _build(pdir, robots, seed, device, plant if plant is not None else {"actuator": servo_flags(actuator)})
     rig = Rig(env)
@@ -728,9 +728,9 @@ def floor_rollout(pdir, robots: int, seed: int, seconds: float, device: str, sta
     handed back (fake runs)."""
     import torch
 
-    from mp4_rl.getup.eval import getup_eval as ge
-    from mp4_rl.getup.task import _yaw_of, tilt_deg  # noqa: F401
-    from mp4_rl.walker.eval.terrain import TorchPolicy, bam_currents
+    from mp4_rl.skills.getup.eval import getup_eval as ge
+    from mp4_rl.skills.getup.task import _yaw_of, tilt_deg  # noqa: F401
+    from mp4_rl.skills.walker.eval.terrain import TorchPolicy, bam_currents
 
     pol = TorchPolicy(Path(pdir) / "policy.npz", device)
     phase_s = float(pol.meta.get("getup_phase_s", 0.0) or 0.0)
@@ -744,7 +744,7 @@ def floor_rollout(pdir, robots: int, seed: int, seconds: float, device: str, sta
     env.reset()
     settled = {}
     if start is not None:
-        from mp4_rl.getup.task import spawn_overlaps
+        from mp4_rl.skills.getup.task import spawn_overlaps
         rng = np.random.default_rng(seed)
         quat = np.stack([quat_from_gravity(start["g"], y) for y in rng.uniform(-math.pi, math.pi, robots)])
         quat = torch.as_tensor(quat, dtype=torch.float32, device=dev)
@@ -938,7 +938,7 @@ def mode_floor(a) -> int:
 
 def mode_obs(a) -> int:
     from mp4_rl.common.policy_file import NumpyPolicy
-    from mp4_rl.getup.runner.runner import load_mount
+    from mp4_rl.deploy.runner.runner import load_mount
     run = load_run(a.run)
     w = getup_window(run, a.getup)
     real = real_series(run, w)

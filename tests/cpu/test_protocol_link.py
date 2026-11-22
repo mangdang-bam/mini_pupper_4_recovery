@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from fake_esp32 import FakeEsp32
 
-from mp4_rl.getup.mp4link import protocol as p
-from mp4_rl.getup.mp4link.link import Link, LinkError
+from mp4_rl.deploy.mp4link import protocol as p
+from mp4_rl.deploy.mp4link.link import Link, LinkError
 
 
 def test_crc16_ccitt_false_vector():

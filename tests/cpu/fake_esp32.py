@@ -20,7 +20,7 @@ import tty
 
 import numpy as np
 
-from mp4_rl.getup.mp4link import protocol as p
+from mp4_rl.deploy.mp4link import protocol as p
 
 
 class FakeEsp32:

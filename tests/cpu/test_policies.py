@@ -16,7 +16,7 @@ from mp4_sim import robots as sim_robots
 from mp4_rl import paths
 from mp4_rl.common.policy import CONTRACT_JSON, Bounds
 from mp4_rl.common.policy_file import NumpyPolicy, fixture_tolerance
-from mp4_rl.getup.runner import runner as rn
+from mp4_rl.deploy.runner import runner as rn
 
 REPO = Path(__file__).resolve().parents[2]
 ARRAYS = {
@@ -52,12 +52,12 @@ def ids(p) -> str:
 
 
 def policy_dir(name: str, robot: str = "sku2") -> Path:
-    return REPO / "skills" / name / "policies" / robot
+    return REPO / "mp4_rl" / "skills" / name / "policies" / robot
 
 
 def checkpoint(rel: str) -> Path:
     skill = "walker" if rel.split("/")[1].startswith("walker") else "getup"
-    return REPO / "skills" / skill / "checkpoints" / rel
+    return REPO / "mp4_rl" / "skills" / skill / "checkpoints" / rel
 
 
 def robot_files(robot: str):
@@ -167,7 +167,7 @@ def test_the_get_up_stops_the_front_right_hip_at_its_limit():
 
 def export(*args):
     import mp4_sim
-    src = os.pathsep.join([str(REPO / "src"), str(Path(mp4_sim.__file__).resolve().parents[1])])
+    src = os.pathsep.join([str(REPO), str(Path(mp4_sim.__file__).resolve().parents[1])])
     subprocess.run([sys.executable, "-m", "mp4_rl.common.export", *map(str, args)], check=True, cwd=REPO,
                    env={"PYTHONPATH": src, "PATH": "/usr/bin:/bin", "WANDB_MODE": "disabled"})
 
@@ -202,18 +202,18 @@ def test_the_sku1_configs_hold_the_options_their_recipes_build(tmp_path, name):
     """The SKU1 policy's config.json options are what its recipe's command line builds, from the recipe's parent."""
     pytest.importorskip("mjlab")
     from dataclasses import asdict, is_dataclass
-    rel = f"skills/{name}/recipes/sku1/finetune.sh"
+    rel = f"mp4_rl/skills/{name}/recipes/sku1/finetune.sh"
     rc, _, err = recipe(tmp_path, rel, OUT=str(tmp_path / "out"), ANCHOR="x/anchor")
     assert rc == 0, err
     argv = (tmp_path / "args").read_text().split()
     if name == "walker":
-        from mp4_rl.walker import train as tw
-        a = tw.build_parser().parse_args(argv[argv.index("mp4_rl.walker.train") + 1:])
+        from mp4_rl.skills.walker import train as tw
+        a = tw.build_parser().parse_args(argv[argv.index("mp4_rl.skills.walker.train") + 1:])
         src = json.loads((REPO / a.resume).with_name("config.json").read_text())["task"]["options"]
         o = tw.walker_options(a, src, tw.resume_step(REPO / a.resume))
     else:
-        from mp4_rl.getup import train as tg
-        a = tg.parse_args(argv[argv.index("mp4_rl.getup.train") + 1:])
+        from mp4_rl.skills.getup import train as tg
+        a = tg.parse_args(argv[argv.index("mp4_rl.skills.getup.train") + 1:])
         o = tg.task_options(a)
     assert paths.sha256(REPO / a.resume) == SHA[{"walker": "sku2/walker/model_10793.pt",
                                                  "getup": "sku2/getup_start/model_6544.pt"}[name]]
@@ -251,8 +251,8 @@ def recipe(tmp_path, name, *args, cwd=REPO, **env):
 
 
 @pytest.mark.parametrize("name, seed, iters, start, anchor", [
-    ("skills/walker/recipes/sku2/step1.sh", "71", "1000", "skills/walker/checkpoints/sku2/walker_start/model_6297.pt", "skills/walker/checkpoints/sku2/walker_start/model_6297.pt"),
-    ("skills/getup/recipes/sku2/finetune.sh", "72", "1000", "skills/getup/checkpoints/sku2/getup_start/model_6544.pt", None),
+    ("mp4_rl/skills/walker/recipes/sku2/step1.sh", "71", "1000", "mp4_rl/skills/walker/checkpoints/sku2/walker_start/model_6297.pt", "mp4_rl/skills/walker/checkpoints/sku2/walker_start/model_6297.pt"),
+    ("mp4_rl/skills/getup/recipes/sku2/finetune.sh", "72", "1000", "mp4_rl/skills/getup/checkpoints/sku2/getup_start/model_6544.pt", None),
 ])
 def test_recipes_start_from_the_shipped_checkpoints(tmp_path, name, seed, iters, start, anchor):
     rc, o, err = recipe(tmp_path, name)
@@ -263,19 +263,19 @@ def test_recipes_start_from_the_shipped_checkpoints(tmp_path, name, seed, iters,
 
 
 def test_recipe_settings_and_overrides(tmp_path):
-    rc, o, _ = recipe(tmp_path, "skills/walker/recipes/sku2/step1.sh", "5", "my/parent.pt", "2", ENVS="64", OUT="runs/smoke")
+    rc, o, _ = recipe(tmp_path, "mp4_rl/skills/walker/recipes/sku2/step1.sh", "5", "my/parent.pt", "2", ENVS="64", OUT="runs/smoke")
     assert rc == 0 and (o["--seed"], o["--resume"], o["--anchor"], o["--iters"]) == ("5", "my/parent.pt", "my/parent.pt", "2")
     assert (o["--envs"], o["--out"], o["--cmd-ramp"], o["--save-at"]) == ("64", "runs/smoke", "300", "300")
-    rc, o, _ = recipe(tmp_path, "skills/getup/recipes/sku2/finetune.sh", ENVS="64")
+    rc, o, _ = recipe(tmp_path, "mp4_rl/skills/getup/recipes/sku2/finetune.sh", ENVS="64")
     assert rc == 0 and o["--envs"] == "64" and o["--std-bounds"] == "0.06" and o["--getup-attachment"] is True
 
 
 @pytest.mark.parametrize("script, name, flag, full, quick", [
-    ("skills/getup/eval/sku2.sh", "gflat_s21", "--robots", "512", "64"),
-    ("skills/getup/eval/sku1.sh", "gterr_s21", "--robots", "1024", "128"),
-    ("skills/walker/eval/sku2.sh", "omni_s21", "--per", "24", "3"),
-    ("skills/walker/eval/sku1.sh", "push_s21", "--robots", None, "8"),
-    ("skills/walker/eval/sku2.sh", "wstairs_s21", "--envs", "256", "32"),
+    ("mp4_rl/skills/getup/eval/sku2.sh", "gflat_s21", "--robots", "512", "64"),
+    ("mp4_rl/skills/getup/eval/sku1.sh", "gterr_s21", "--robots", "1024", "128"),
+    ("mp4_rl/skills/walker/eval/sku2.sh", "omni_s21", "--per", "24", "3"),
+    ("mp4_rl/skills/walker/eval/sku1.sh", "push_s21", "--robots", None, "8"),
+    ("mp4_rl/skills/walker/eval/sku2.sh", "wstairs_s21", "--envs", "256", "32"),
 ])
 def test_quick_evaluations_run_an_eighth_of_the_robots(tmp_path, script, name, flag, full, quick):
     for env, want in (({}, full), ({"QUICK": "1"}, quick)):
@@ -286,17 +286,17 @@ def test_quick_evaluations_run_an_eighth_of_the_robots(tmp_path, script, name, f
 @pytest.mark.parametrize("n, seed, iters", [(2, "81", "1500"), (3, "91", "1000"), (4, "101", "1000")])
 def test_later_walker_steps_continue_from_the_step_before(tmp_path, n, seed, iters):
     work = tmp_path / "w"
-    rc, _, err = recipe(tmp_path, f"skills/walker/recipes/sku2/step{n}.sh", cwd=work.mkdir() or work)
+    rc, _, err = recipe(tmp_path, f"mp4_rl/skills/walker/recipes/sku2/step{n}.sh", cwd=work.mkdir() or work)
     assert rc == 2 and f"no run in runs/walker_step{n - 1}" in err
     run = work / f"runs/walker_step{n - 1}/20270101_000000_s1_step{n - 1}"
     run.mkdir(parents=True)
     for k in (7050, 7297, 7100):
         (run / f"model_{k}.pt").touch()
-    rc, o, err = recipe(tmp_path, f"skills/walker/recipes/sku2/step{n}.sh", cwd=work)
+    rc, o, err = recipe(tmp_path, f"mp4_rl/skills/walker/recipes/sku2/step{n}.sh", cwd=work)
     assert rc == 0, err
     assert (o["--seed"], o["--iters"], o["--tag"]) == (seed, iters, f"step{n}")
     assert o["--resume"] == f"runs/walker_step{n - 1}/{run.name}/model_7297.pt"
-    assert o["--anchor"] == "skills/walker/checkpoints/sku2/walker_start/model_6297.pt" and o["--cmd-ramp"] == "0"
+    assert o["--anchor"] == "mp4_rl/skills/walker/checkpoints/sku2/walker_start/model_6297.pt" and o["--cmd-ramp"] == "0"
 
 
 def test_the_install_check_covers_both_robots_policies(tmp_path, monkeypatch):
@@ -304,13 +304,15 @@ def test_the_install_check_covers_both_robots_policies(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("verify", REPO / "scripts/install/verify.py")
     verify = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verify)
-    assert verify.policy_hashes() == [("getup sku1", None), ("getup sku2", None), ("walker sku1", None),
-                                      ("walker sku2", None)]
+    assert sorted(verify.policy_hashes()) == [("getup sku1", None), ("getup sku2", None), ("walker sku1", None),
+                                              ("walker sku2", None)]
     import shutil
+
+    from mp4_rl import skills
     for name, robot in POLICIES:
-        shutil.copytree(policy_dir(name, robot), tmp_path / "skills" / name / "policies" / robot)
-    c = tmp_path / "skills/walker/policies/sku1/sku1_contract.json"
+        shutil.copytree(policy_dir(name, robot), tmp_path / name / "policies" / robot)
+    c = tmp_path / "walker/policies/sku1/sku1_contract.json"
     c.write_text(c.read_text() + " ")                 # one byte more: no longer mp4_sim's file
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(skills, "HERE", tmp_path)
     got = dict(verify.policy_hashes())
     assert got["walker sku1"] == "the folder's sku1_contract.json" and got["getup sku1"] is None

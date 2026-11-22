@@ -4,9 +4,9 @@ import importlib
 import pytest
 
 MODULES = ("common.algorithms", "common.anchor_ppo", "common.env", "common.mdp", "common.classic_gait",
-           "walker.task", "walker.terrain", "walker.train", "walker.eval.omni", "walker.eval.push",
-           "walker.eval.terrain", "walker.eval.gait_metrics", "getup.task", "getup.train", "getup.eval.getup_eval",
-           "getup.eval.motion_meter", "getup.eval.sequence")
+           "skills.walker.task", "skills.walker.terrain", "skills.walker.train", "skills.walker.eval.omni", "skills.walker.eval.push",
+           "skills.walker.eval.terrain", "skills.walker.eval.gait_metrics", "skills.getup.task", "skills.getup.train", "skills.getup.eval.getup_eval",
+           "skills.getup.eval.motion_meter", "skills.getup.eval.sequence")
 
 
 @pytest.mark.parametrize("name", MODULES)

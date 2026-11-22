@@ -1,6 +1,6 @@
 """The sequence evaluation builds the get-up's thigh-to-base contact as its training does (off when the measured limits
 are on)."""
-from mp4_rl.getup.eval.sequence import effective_thigh_base
+from mp4_rl.skills.getup.eval.sequence import effective_thigh_base
 
 
 def test_limits_on_drops_thigh_base():

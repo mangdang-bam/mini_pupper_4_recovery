@@ -1,5 +1,6 @@
 """The refusals: policies the robot must not run and targets it must not send; the shipped policies pass."""
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,8 +15,8 @@ from mp4_rl.common.policy import (
     contract_tendon_coefs,
     policy_bounds,
 )
-from mp4_rl.getup.runner import checks
-from mp4_rl.getup.runner import runner as rn
+from mp4_rl.deploy.runner import checks
+from mp4_rl.deploy.runner import runner as rn
 
 WALKER, GETUP = paths.WALKER_POLICIES / "sku2", paths.GETUP_POLICIES / "sku2"
 
@@ -89,7 +90,7 @@ def test_run_refuses_a_walker_and_a_get_up_with_different_calibrations(robot, tm
 def test_a_calibration_that_replaced_the_exported_one_is_accepted(fixed_calibration, tmp_path, capsys):
     """A folder whose calibration lists the one the policy was exported for (``earlier_calibrations``) passes."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("make_contract", paths.REPO / "tools" / "make_contract.py")
+    spec = importlib.util.spec_from_file_location("make_contract", Path(__file__).resolve().parents[2] / "tools" / "make_contract.py")
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
     from robot_helpers import TEST_CONTRACT_JSON

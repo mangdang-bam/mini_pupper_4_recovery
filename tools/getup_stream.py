@@ -1,7 +1,7 @@
 """Get-up motions as files ``mp4link stream`` plays on a lifted robot: ``delta_dd`` (N x 12: each SET_ALL frame's
 targets minus the contract's stand, in the firmware's deci-degrees, servo order) at ``period_s`` 0.02 s.
 
-    .venv/bin/python tools/getup_stream.py --policy skills/getup/policies/sku2 --out-dir runs/streams
+    .venv/bin/python tools/getup_stream.py --policy mp4_rl/skills/getup/policies/sku2 --out-dir runs/streams
 
 A learned get-up policy (``--policy DIR``, an export with ``config.json``) plays in one simulated robot in
 ``getup_eval``'s env (the policy's band, scale, limits, target filter alpha and plant), from a named start
@@ -25,7 +25,7 @@ seconds, success and its time, max deviation from the stand per joint, the margi
 
 On the robot (lifted, legs free): ``mp4link stream FILE --cap CAP --stop-c 55``, always in the firmware's get-up mode
 and with the policy decoder's band and step (abduction 90 deg, hip and knee 180 deg, 20 deg per send). See
-skills/getup/docs/ROBOT_SKU2.md. The JSON counts frames it would change (``frames_beyond_stream_band``, ``frames_over_stream_step``): 0,
+mp4_rl/skills/getup/docs/ROBOT_SKU2.md. The JSON counts frames it would change (``frames_beyond_stream_band``, ``frames_over_stream_step``): 0,
 or a frame or two by tick rounding (0.3 deg).
 """
 from __future__ import annotations
@@ -131,9 +131,9 @@ def record_policy(pdir: Path, start: str, seed: int, seconds: float, device: str
 
     from mp4_rl.common import built_env
     from mp4_rl.common.mdp import servo_action
-    from mp4_rl.getup.eval import getup_eval as ge
-    from mp4_rl.getup.task import SUCCESS_HOLD_S
-    from mp4_rl.walker.eval.terrain import TorchPolicy, bam_currents
+    from mp4_rl.skills.getup.eval import getup_eval as ge
+    from mp4_rl.skills.getup.task import SUCCESS_HOLD_S
+    from mp4_rl.skills.walker.eval.terrain import TorchPolicy, bam_currents
 
     c = Contract.load()
     pol = TorchPolicy(pdir / "policy.npz", device)

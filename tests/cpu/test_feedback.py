@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mp4_rl.getup.runner import feedback as fb
+from mp4_rl.deploy.runner import feedback as fb
 
 DATA = Path(__file__).parent / "data"
 
@@ -123,8 +123,8 @@ def test_whole_robot_logs(name, frames):
 from fake_esp32 import FakeEsp32  # noqa: E402
 from robot_helpers import C  # noqa: E402
 
-from mp4_rl.getup.mp4link import cli  # noqa: E402
-from mp4_rl.getup.mp4link import protocol as p  # noqa: E402
+from mp4_rl.deploy.mp4link import cli  # noqa: E402
+from mp4_rl.deploy.mp4link import protocol as p  # noqa: E402
 
 
 @pytest.fixture
@@ -206,7 +206,7 @@ def test_runner_observes_filtered_positions(fixed_calibration, monkeypatch, tmp_
     import robot_helpers as rh
     from fake_esp32 import FakeRobot
 
-    from mp4_rl.getup.runner import runner as rn
+    from mp4_rl.deploy.runner import runner as rn
     monkeypatch.setattr(rn, "HOLD_AFTER_S", 0.2)
     robot = FakeRobot(C, rh.MOUNT, rn.IDENTIFIED)
     try:

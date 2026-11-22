@@ -4,7 +4,7 @@
 The calibration holds the robot's offsets and the stand they give in the servos' units. Calibrate the robot, read the
 offsets on the Pi, and make the file on any machine:
 
-    python3 -m mp4_rl.getup.mp4link offsets --json offsets.json
+    python3 -m mp4_rl.deploy.mp4link offsets --json offsets.json
     .venv/bin/python tools/make_contract.py offsets.json --note "unit 2, calibrated 2027-01-10" \\
         --out my_robot/sku2_contract.json
 
@@ -15,8 +15,8 @@ Only ``offsets_deg``, ``stand_dd``, ``stand_ticks`` and ``calibration`` change; 
 stand, so they belong to one calibration, and ``runner run`` refuses a policy whose bounds were made for another stand. Write
 each policy's bounds again for the new calibration (the network itself is unchanged); the folder gets a copy of it:
 
-    .venv/bin/python -m mp4_rl.common.export --from-policy skills/walker/policies/sku2 my_robot/walker --contract my_robot/sku2_contract.json
-    .venv/bin/python -m mp4_rl.common.export --from-policy skills/getup/policies/sku2 my_robot/getup --contract my_robot/sku2_contract.json
+    .venv/bin/python -m mp4_rl.common.export --from-policy mp4_rl/skills/walker/policies/sku2 my_robot/walker --contract my_robot/sku2_contract.json
+    .venv/bin/python -m mp4_rl.common.export --from-policy mp4_rl/skills/getup/policies/sku2 my_robot/getup --contract my_robot/sku2_contract.json
 
 and run ``runner check`` on the results. The joint limits (``mp4_sim``'s ``sku2_joint_limits.json``) were measured on one
 unit and are kept. Where a stand moved far along a joint's track, the bounds can cut motions the policy learned: compare the

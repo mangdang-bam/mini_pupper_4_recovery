@@ -83,7 +83,7 @@ def test_policy_filter_alpha_reader():
 
 
 def test_ramp_schedule():
-    from mp4_rl.getup.task import filter_alpha_at, policy_filter_alpha_of
+    from mp4_rl.skills.getup.task import filter_alpha_at, policy_filter_alpha_of
     assert [filter_alpha_at(k, 0.75, 0.5, 200) for k in (0, 100, 150, 200, 600)] == pytest.approx(
         [0.5, 0.625, 0.6875, 0.75, 0.75])
     assert filter_alpha_at(0, 0.75) == filter_alpha_at(999, 0.75) == 0.75          # no ramp: the final alpha
@@ -97,7 +97,7 @@ def test_ramp_schedule():
 def test_ramp_hook_counts_this_runs_iterations():
     """install_filter_ramp: alpha 0 before the first iteration's rollout, then after each iteration's log the next
     iteration's; a resumed run (start_it 2498) starts at k = 0; each iteration's alpha written and kept."""
-    from mp4_rl.getup.task import install_filter_ramp
+    from mp4_rl.skills.getup.task import install_filter_ramp
     seen, written = [], []
 
     class Servo:
@@ -122,7 +122,7 @@ def test_ramp_hook_counts_this_runs_iterations():
 def test_export_meta_round_trip(tmp_path):
     from mp4_rl.common.actor import mlp
     from mp4_rl.common.policy_file import NumpyPolicy, export, with_meta
-    from mp4_rl.getup.runner.runner import band_refusal
+    from mp4_rl.deploy.runner.runner import band_refusal
     sd = {f"mlp.{k}": v for k, v in mlp(45, 12, (64, 32)).state_dict().items()}
     ck = tmp_path / "m.pt"
     torch.save({"actor_state_dict": sd}, ck)
@@ -151,7 +151,7 @@ def test_export_script_takes_the_runs_option(tmp_path):
 
     from mp4_rl.common.actor import mlp
     from mp4_rl.common.env import describe
-    from mp4_rl.getup.task import GetupOptions
+    from mp4_rl.skills.getup.task import GetupOptions
     repo = Path(__file__).resolve().parents[2]
     run = tmp_path / "run"
     run.mkdir()
@@ -179,7 +179,7 @@ def test_export_script_takes_the_runs_option(tmp_path):
 
 def test_getup_options_wire_the_filter():
     from mp4_rl.common.env import describe
-    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
+    from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
     off = make_getup_env_cfg(GetupOptions())
     assert off.actions["servo"].filter_alpha == 0.0 and off.rewards["action_rate"].params["applied"] is False
     on = make_getup_env_cfg(GetupOptions(filter_alpha=0.75, filter_alpha_start=0.5,
@@ -195,7 +195,7 @@ def _getup_env(n, **kw):
     from mjlab.envs import ManagerBasedRlEnv
 
     from mp4_rl.common.env import noise_profile
-    from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
+    from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
     cfg = make_getup_env_cfg(GetupOptions(num_envs=n, noise_end=noise_profile(), **kw))
     cfg.seed = 7
     return ManagerBasedRlEnv(cfg=cfg, device="cuda:0")

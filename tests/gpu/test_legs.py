@@ -6,7 +6,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mp4_sim.robot import model as sku2
 
 from mp4_rl.common.env import TerrainOptions, foot_r, make_terrain_env_cfg, noise_profile
-from mp4_rl.getup.task import GetupOptions, make_getup_env_cfg
+from mp4_rl.skills.getup.task import GetupOptions, make_getup_env_cfg
 
 FEET = ("sphere", "mesh")
 

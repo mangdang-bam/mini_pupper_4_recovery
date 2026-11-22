@@ -12,8 +12,8 @@ from robot_helpers import go
 
 from mp4_rl import paths
 from mp4_rl.common.policy import CONTRACT_JSON, Contract
-from mp4_rl.getup.mp4link import cli
-from mp4_rl.getup.runner import checks
+from mp4_rl.deploy.mp4link import cli
+from mp4_rl.deploy.runner import checks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -80,13 +80,16 @@ def test_deployed_subset_needs_only_numpy_and_pyserial(tmp_path):
     env0 = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"} | {"PYTHON": sys.executable}
     env0["PYTHONPATH"] = str(Path(mp4_sim.__file__).resolve().parents[1])      # the deploying machine's mp4_sim
     subprocess.run(["sh", str(ROOT / "tools" / "deploy.sh"), "-", str(dest)], check=True, capture_output=True, env=env0)
-    assert sorted(p.name for p in (dest / "src" / "mp4_sim").iterdir()) == ["__init__.py", "calibration.py"]
-    assert sorted(p.name for p in (dest / "src").iterdir()) == ["mp4_rl", "mp4_sim"]
-    assert not (dest / "src" / "mp4_rl" / "walker").exists() and not (dest / "src" / "mp4_rl" / "common" / "env.py").exists()
-    mount = dest / "src" / "mp4_rl" / "getup" / "runner" / "imu_mount.json"
+    assert sorted(p.name for p in (dest / "mp4_sim").iterdir()) == ["__init__.py", "calibration.py"]
+    assert sorted(p.name for p in dest.iterdir() if p.name != "runs") == ["mp4_rl", "mp4_sim", "tests", "tools"]
+    assert sorted(p.name for p in (dest / "mp4_rl").iterdir()) == ["__init__.py", "common", "deploy", "paths.py", "skills"]
+    assert not (dest / "mp4_rl" / "common" / "env.py").exists()
+    assert sorted(p.relative_to(dest / "mp4_rl" / "skills").as_posix()
+                  for p in (dest / "mp4_rl" / "skills").glob("*/*/*")) == ["getup/policies/sku2", "walker/policies/sku2"]
+    mount = dest / "mp4_rl" / "deploy" / "runner" / "imu_mount.json"
     assert mount.read_bytes() == (Path(mp4_sim.__file__).parent / "robot/assets/sku_2/measured/imu_mount.json").read_bytes()
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"} | {"PYTHONPATH": str(dest / "src")}
-    code = ("import sys; import mp4_rl.getup.runner.runner as r, mp4_rl.getup.mp4link.cli;"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    code = ("import sys; import mp4_rl.deploy.runner.runner as r, mp4_rl.deploy.mp4link.cli;"
             "std = set(sys.stdlib_module_names);"
             "top = {m.split('.')[0] for m in sys.modules} - std - {'numpy', 'serial', 'mp4_rl', 'mp4_sim'};"
             "assert not {t for t in top if not t.startswith('_')}, top;"
@@ -97,13 +100,16 @@ def test_deployed_subset_needs_only_numpy_and_pyserial(tmp_path):
             "assert r.IMU_MOUNT_JSON.parent == r.Path(r.__file__).resolve().parent")
     subprocess.run([sys.executable, "-B", "-c", code, str(dest.resolve())], check=True, env=env, cwd=dest)
     for skill in ("walker", "getup"):
-        folder = dest / "skills" / skill / "policies" / "sku2"
+        folder = dest / "mp4_rl" / "skills" / skill / "policies" / "sku2"
         assert sorted(p.name for p in folder.iterdir()) == ["config.json", "policy.npz", "sku2_contract.json",
                                                             "sku2_joint_limits.json"]
-        p = subprocess.run([sys.executable, "-B", "-m", "mp4_rl.getup.runner", "check", "--policy",
-                            f"skills/{skill}/policies/sku2"], env=env, cwd=dest, capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "-B", "-m", "mp4_rl.deploy.runner", "check", "--policy",
+                            f"mp4_rl/skills/{skill}/policies/sku2"], env=env, cwd=dest, capture_output=True, text=True)
         assert p.returncode == 0, p.stdout + p.stderr
         assert "calibration: ok (sku2_contract.json" in p.stdout
+    p = subprocess.run([sys.executable, "-B", "-m", "mp4_rl.deploy.runner", "check"], env=env, cwd=dest,
+                       capture_output=True, text=True)              # the default: the deployed walker
+    assert p.returncode == 0 and "calibration: ok (sku2_contract.json" in p.stdout, p.stdout + p.stderr
 
 
 def test_summarise_runs_on_a_fresh_log(robot, tmp_path, capsys):

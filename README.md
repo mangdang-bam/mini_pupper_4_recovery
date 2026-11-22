@@ -9,8 +9,8 @@ v0.2.0).
 
 | Skill | What it does | SKU2 | SKU1 |
 |---|---|---|---|
-| [Walker](skills/walker/README.md) | Walks in every direction and turns in place, rides out shoves; in simulation also on rough ground and the printed stairs | policy, recipes, evaluation; ran on the robot | policy, recipe, evaluation; ran on the robot |
-| [Get-up](skills/getup/README.md) | Gets up from any fall pose, with or without the lidar on the hood; switches with the walker on the robot | policy, recipes, evaluation; ran on the robot | policy, recipe, evaluation; ran on the robot |
+| [Walker](mp4_rl/skills/walker/README.md) | Walks in every direction and turns in place, rides out shoves; in simulation also on rough ground and the printed stairs | policy, recipes, evaluation; ran on the robot | policy, recipe, evaluation; ran on the robot |
+| [Get-up](mp4_rl/skills/getup/README.md) | Gets up from any fall pose, with or without the lidar on the hood; switches with the walker on the robot | policy, recipes, evaluation; ran on the robot | policy, recipe, evaluation; ran on the robot |
 
 ## Robots
 
@@ -18,10 +18,10 @@ Every trainer, evaluator and the exporter take `--robot sku2|sku1` (default `sku
 policy's own robot).
 
 - **SKU2:** the long body with a Raspberry Pi 5 and the 3S LiPo inside. The policies run on the Pi at 50 Hz and send
-  servo targets over UART to the ESP32 board: [the robot guide](skills/getup/docs/ROBOT_SKU2.md).
+  servo targets over UART to the ESP32 board: [the robot guide](mp4_rl/skills/getup/docs/ROBOT_SKU2.md).
 - **SKU1:** the short body on the same legs, servos and board, without a Raspberry Pi. Both policies run on its ESP32
   with the [Mini Pupper v4 firmware](https://github.com/mangdangroboticsclub/minipupper_4_mcu), which loads them with its
-  own tools: [the robot guide](skills/getup/docs/ROBOT_SKU1.md).
+  own tools: [the robot guide](mp4_rl/skills/getup/docs/ROBOT_SKU1.md).
 
 ## Install
 
@@ -47,23 +47,23 @@ Former name: mini_pupper_4_recovery (Python package `mp4_recovery`).
 CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest tests/cpu         # no GPU needed
 
 # Check the shipped policies the way the robot does
-.venv/bin/python -m mp4_rl.getup.runner check --policy skills/walker/policies/sku2
-.venv/bin/python -m mp4_rl.getup.runner check --policy skills/getup/policies/sku2
+.venv/bin/python -m mp4_rl.deploy.runner check --policy mp4_rl/skills/walker/policies/sku2
+.venv/bin/python -m mp4_rl.deploy.runner check --policy mp4_rl/skills/getup/policies/sku2
 
 # Evaluate in simulation (GPU): the get-up from every start, and walk, shove, fall, get up, walk for 60 s
-sh skills/getup/eval/sku2.sh runs/eval gflat_s21 seq_s21
-.venv/bin/python skills/getup/eval/score.py runs/eval
+sh mp4_rl/skills/getup/eval/sku2.sh runs/eval gflat_s21 seq_s21
+.venv/bin/python mp4_rl/skills/getup/eval/score.py runs/eval
 
 # Fine-tune the get-up from its starting checkpoint and export the result
-sh skills/getup/recipes/sku2/finetune.sh
+sh mp4_rl/skills/getup/recipes/sku2/finetune.sh
 .venv/bin/python -m mp4_rl.common.export runs/getup_finetune/<run>/model_<k>.pt runs/exports/getup
 
-# Put the policies on the Raspberry Pi (ubuntu@PI: the Pi's user and address): see skills/getup/docs/ROBOT_SKU2.md
+# Put the policies on the Raspberry Pi (ubuntu@PI: the Pi's user and address): see mp4_rl/skills/getup/docs/ROBOT_SKU2.md
 tools/deploy.sh ubuntu@PI walk
 ```
 
-On the SKU2 one runner, `mp4_rl.getup.runner`, runs both policies: the walker, and the get-up when it detects a fall.
-On the SKU1 the Mini Pupper v4 firmware does the same on the ESP32 ([the robot guide](skills/getup/docs/ROBOT_SKU1.md)).
+On the SKU2 one runner, `mp4_rl.deploy.runner`, runs both policies: the walker, and the get-up when it detects a fall.
+On the SKU1 the Mini Pupper v4 firmware does the same on the ESP32 ([the robot guide](mp4_rl/skills/getup/docs/ROBOT_SKU1.md)).
 
 `tests/cpu/test_runner_modes.py` and the stream test in `tests/cpu/test_feedback.py` run robot-side code in real time
 against a simulated board: on a busy machine a timing assertion can fail; rerun the failed test alone. `tests/cpu` skips
@@ -73,7 +73,7 @@ against a simulated board: on a busy machine a timing assertion can fail; rerun 
 
 ### SKU2
 
-With `skills/walker/policies/sku2` and `skills/getup/policies/sku2`, each take one run of the runner; get-up times from
+With `mp4_rl/skills/walker/policies/sku2` and `mp4_rl/skills/getup/policies/sku2`, each take one run of the runner; get-up times from
 the runner's log, speeds from the distance on a tape measure over the run's time, turn rates from the gyro:
 
 | | Takes | Result |
@@ -86,9 +86,9 @@ the runner's log, speeds from the distance on a tape measure over the run's time
 
 ### SKU1
 
-With `skills/walker/policies/sku1` and `skills/getup/policies/sku1` on the robot's ESP32, each take one run; get-up times
+With `mp4_rl/skills/walker/policies/sku1` and `mp4_rl/skills/getup/policies/sku1` on the robot's ESP32, each take one run; get-up times
 from the firmware's get-up log, speeds from the distance on a tape measure over the run's time, turn rates from the angle
-turned over the run's time (per command: [the robot guide](skills/getup/docs/ROBOT_SKU1.md#what-was-measured)):
+turned over the run's time (per command: [the robot guide](mp4_rl/skills/getup/docs/ROBOT_SKU1.md#what-was-measured)):
 
 | | Takes | Result |
 |---|---|---|
@@ -105,16 +105,16 @@ stairs and the lidar; each skill's README gives the commands.
 
 - The printed stairs and rough ground were evaluated in simulation; the robot results above are on flat floor.
 - The shipped calibration and joint limits are those of the unit of each kind the policies were trained for: another
-  unit needs its own calibration ([SKU2](skills/getup/docs/ROBOT_SKU2.md#adapting-to-another-unit),
-  [SKU1](skills/getup/docs/ROBOT_SKU1.md#another-unit)).
+  unit needs its own calibration ([SKU2](mp4_rl/skills/getup/docs/ROBOT_SKU2.md#adapting-to-another-unit),
+  [SKU1](mp4_rl/skills/getup/docs/ROBOT_SKU1.md#another-unit)).
 
 ## What is where
 
 ```
-skills/walker/     recipes/{sku2,sku1}/, policies/{sku2,sku1}/, checkpoints/sku2/ (start and final), checkpoints/sku1/
+mp4_rl/skills/walker/     recipes/{sku2,sku1}/, policies/{sku2,sku1}/, checkpoints/sku2/ (start and final), checkpoints/sku1/
                    (final), eval/
-skills/getup/      the same, and docs/ (running the policies on each robot)
-src/mp4_rl/
+mp4_rl/skills/getup/      the same, and docs/ (running the policies on each robot)
+mp4_rl/
   common/          the policy interface (numpy), decoder bounds, export, the base environment on mp4_sim's scene,
                    PPO with the smoothness losses and the anchor, the classic gait baseline
   walker/          the walker's task, training terrain, trainer and evaluations (omni, push, terrain)

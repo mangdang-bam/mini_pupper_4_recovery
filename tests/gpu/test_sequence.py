@@ -10,11 +10,11 @@ import torch
 
 from mp4_rl import paths
 from mp4_rl.common.policy import CONTRACT_JSON, HistoryStacker  # noqa: E402
-from mp4_rl.getup.eval import sequence as sc  # noqa: E402
-from mp4_rl.getup.runner import runner as rn  # noqa: E402
+from mp4_rl.deploy.runner import runner as rn  # noqa: E402
+from mp4_rl.skills.getup.eval import sequence as sc  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-WALKER = REPO / "skills" / "walker" / "policies" / "sku2"
+WALKER = REPO / "mp4_rl" / "skills" / "walker" / "policies" / "sku2"
 
 
 def test_torch_filter_is_the_runners():
@@ -143,7 +143,7 @@ def test_kick_schedule_draws():
 
 
 def test_sectors_bins_and_commands():
-    from mp4_rl.walker.eval import push as pe
+    from mp4_rl.skills.walker.eval import push as pe
     assert sc.sector_of([0, 22.4, 22.6, 90, 180, 337.4, 337.6, 359.9, -10]).tolist() == [0, 0, 1, 2, 4, 7, 0, 0, 0]
     assert [pe.dir_label(360 * i / 8) for i in range(8)][:3] == ["from_back", "from_back_right", "from_right"]
     assert sc.mag_bins(0.5, 1.5) == [(0.5, 0.75), (0.75, 1.0), (1.0, 1.25), (1.25, 1.5)]

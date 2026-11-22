@@ -103,7 +103,7 @@ and run the installer again.
 
 ## Known risks
 
-- **Headless Linux** needs EGL for rendering (videos from `mp4_rl.getup.eval.getup_eval --video`):
+- **Headless Linux** needs EGL for rendering (videos from `mp4_rl.skills.getup.eval.getup_eval --video`):
   `export MUJOCO_GL=egl`.
 - **Weights & Biases** is pulled in by mjlab. Training logs to TensorBoard; set
   `WANDB_MODE=disabled` when running offline.

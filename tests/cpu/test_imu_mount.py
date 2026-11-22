@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from mp4_rl.getup.runner import runner as rn
+from mp4_rl.deploy.runner import runner as rn
 
 CUSTOM = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]          # a quarter turn about z
 
