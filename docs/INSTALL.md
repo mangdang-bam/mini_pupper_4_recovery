@@ -147,5 +147,5 @@ training on the GPU, either can fail; rerun the failed test alone.
 
 | Skipped | Needs | What it checks |
 |---|---|---|
-| `test_feedback.py::test_whole_robot_logs` (3) | `MP4_ROBOT_LOGS`: a folder with whole robot logs `map.npz`, `still60.npz`, `calib_a5.npz` (not published) | the feedback filter over whole runs recorded on the robot |
+| `test_feedback.py::test_whole_robot_logs` (3) | `MP4_ROBOT_LOGS`: a folder with whole robot logs `map.npz`, `still60.npz`, `calib_a5.npz` (not part of this repository) | the feedback filter over whole runs recorded on the robot |
 | `test_md300.py::test_torque_and_current_match_bam` (6) | `BAM_UPSTREAM`: a checkout of [Rhoban/bam](https://github.com/Rhoban/bam) with the MD-300 model (pull request #26, commit 2d1688a) | the vendored MD-300 model's torque and current against upstream's, three servos at 12.0 and 10.5 V |

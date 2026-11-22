@@ -5,14 +5,14 @@ the policies at 50 Hz and sends servo targets over UART to the ESP32 board. The 
 and rides out shoves. The **get-up** (`skills/getup/policies/sku2`) takes over when the runner detects a fall, and hands back once the
 robot stands: the walk, shove, fall, get-up, walk sequence.
 
-The shipped calibration, joint limits and policies belong to one calibrated robot. On any other unit, go through
-[Adapting to another unit](#adapting-to-another-unit) first. All results below come from that one robot, shoved by hand.
+The shipped calibration and joint limits are those of the unit the policies were trained for and measured on. On any
+other unit, go through [Adapting to another unit](#adapting-to-another-unit) first.
 
 ## Requirements
 
 - Mini Pupper v4 (SKU2) with the hood on and the battery inside (the simulated body includes both). The lidar on the hood
   (LDROBOT STL-06P, about 38 mm across, 35 mm high, 43.2 g) is optional: the get-up was trained with and without a load there.
-- The servo-link firmware with the get-up mode: see [Firmware](#firmware).
+- The Mini Pupper v4 firmware on the ESP32 board: see [Firmware](#firmware).
 - Raspberry Pi 5 with Python 3.10 or newer, numpy and pyserial (`sudo apt install python3-numpy python3-serial`). Nothing else
   is installed on the Pi: `tools/deploy.sh` copies the runner's files, so the package's own Python 3.12 requirement (for
   training on the workstation) doesn't apply there.
@@ -22,21 +22,12 @@ The shipped calibration, joint limits and policies belong to one calibrated robo
 
 ## Firmware
 
-Until MangDang's combined firmware for the Mini Pupper v4 is released, use the
-[`sku2-policies` branch of the firmware repository](https://github.com/mangdang-bam/mini_pupper_4_recovery_firmware/tree/sku2-policies).
-Build it with Docker, from that repository's root:
+The policies run with the [Mini Pupper v4 firmware](https://github.com/mangdangroboticsclub/minipupper_4_mcu) on the
+ESP32-S3: the Pi sends it the servo targets over UART, in walking and in get-up mode. Build and flash it as its README
+describes. Flashing keeps the calibration offsets.
 
-```sh
-docker run --rm -u $(id -u):$(id -g) -e HOME=/tmp -v "$PWD":/project -w /project espressif/idf:v5.5.4 idf.py build
-```
-
-Then flash it onto the ESP32-S3 with `idf.py -p PORT flash` (esptool), from the same image or an ESP-IDF 5.5 install; the
-firmware's README has the Docker command with the serial device passed through. Flashing keeps the calibration offsets.
-
-**Never flash a factory-profile build of the official firmware** (`sdkconfig.defaults.factory`): it writes an identity into
-the ESP32's eFuses at first boot, which can't be undone. The official firmware can't run these policies either: it stands
-the robot up by itself 2 s after the last frame and stops at 500 mA, and the runner goes limp when the firmware doesn't echo
-the get-up mode.
+**Never flash a factory-profile build** (`sdkconfig.defaults.factory`): it writes an identity into the ESP32's eFuses at
+first boot, which can't be undone. The runner goes limp when the firmware doesn't echo the get-up mode.
 
 What the firmware does on its own:
 
@@ -287,9 +278,8 @@ an end; keep your own motions and tools inside the same margins.
 
 ## What was measured
 
-On one robot, with `skills/walker/policies/sku2` and `skills/getup/policies/sku2`; each take is one run of the runner.
-Get-up times come from the runner's log, speeds from the distance on a tape measure over the run's time, turn rates from
-the gyro. No run logs are published.
+With `skills/walker/policies/sku2` and `skills/getup/policies/sku2`; each take is one run of the runner. Get-up times
+come from the runner's log, speeds from the distance on a tape measure over the run's time, turn rates from the gyro.
 
 - **Get-ups:** one take from each placed fall pose (back, left, right, nose down) and two more with the lidar (back,
   right): every one up, standing in 1.5-1.7 s.
@@ -300,12 +290,10 @@ the gyro. No run logs are published.
 - **Turning in place:** five takes at ±0.5, +1.0 and ±2.0 rad/s: 0.81-0.90 × the simulation, up to 1.71 rad/s and
   -1.83 rad/s at a ±2.0 rad/s command.
 - **Walking while turning:** one take at 0.10 m/s and 0.5 rad/s keeps only about two thirds of the simulated turn (0.67 ×).
-- **Not tried on the robot:** the printed stairs and rough ground. Both are tested in simulation only.
+- **The printed stairs and rough ground** were evaluated in simulation ([the walker](../../walker/README.md)).
 
 ## Known limitations
 
-- **The runner reads the calibration from each policy folder.** This is tested on a simulated board only and has not yet
-  been run on the robot: before relying on it, do a short bench run (`check`, a lifted stand, one get-up).
 - **After a get-up the heading hold may keep a small turn** (0.1-0.2 rad/s) for a moment, steering back towards the heading
   before the fall.
 - **Lifting the robot by hand during a run counts as a fall** and uses a get-up. Stop the run first.
@@ -322,7 +310,7 @@ the other modes.
 
 ## Adapting to another unit
 
-The policies and the decoder's bounds rest on one robot's calibration and joint limits, measured by hand with the servos limp,
+The policies and the decoder's bounds rest on the calibration and joint limits of the unit they were trained for, measured by hand with the servos limp,
 in `sku2_joint_limits.json` of `mp4_sim`'s SKU2 measured data, copied into each policy folder (and the hip's stop against the chassis, as a function of the abduction, in
 `sku2_hip_envelope.json`). The hip's track ends depend on how each joint is mounted, so they change with your calibration; the
 abduction and knee limits come mostly from the robot's geometry.
