@@ -139,6 +139,12 @@ def test_run_refuses_policies_of_the_wrong_kind(robot, tmp_path, capsys):
     assert not robot.armed_seen
 
 
+def test_run_refuses_a_policy_whose_inputs_the_runner_does_not_feed(robot, tmp_path, capsys):
+    rc = go(robot, tmp_path, walker_meta={"history": 10})[0]           # 45 inputs, its meta says 10 frames of 45
+    assert rc == 2 and "--policy: the policy has 45 inputs, its meta says 450" in capsys.readouterr().out
+    assert not robot.armed_seen
+
+
 def test_run_refuses_a_get_up_without_its_phase_clock(robot, tmp_path, capsys):
     rc = go(robot, tmp_path, getup_meta={"getup_phase_s": 0.0})[0]
     assert rc == 2 and "phase clock" in capsys.readouterr().out and not robot.armed_seen

@@ -50,13 +50,10 @@ TRACK_END_DEG = 15.0           # a joint measured this close to an end stops a s
 STREAM_END_MARGIN_DEG = 20.0   # a stream with a target this close to an end is refused
 WATCH_NEAR_END_DEG = 5.0       # `watch` flags a reading this close to an end
 WATCH_SAVE_S = 10.0            # `watch` rewrites its log this often, so a crash loses at most this much
-# A stream plays a get-up: every frame in the firmware's get-up current mode, in the get-up policy's band and step limit.
+# A stream plays a get-up: every frame in the firmware's get-up mode, in the get-up policy's band and step limit.
 STREAM_ABD_BAND_DEG, STREAM_HIP_KNEE_BAND_DEG = 90.0, 180.0
 STREAM_STEP_DEG = 20.0
-STREAM_START_C = 45.0          # a stream starts only below this
-STREAM_ECHO_S = 0.2            # the firmware must echo the get-up mode within this of the first frame
 STREAM_GAP_S = 0.1             # no STATE this long stops a stream
-TEMP_HOLD_S = 1.0              # a housing must stay over its limit this long, as the firmware's own cut-out asks
 
 
 # ---- helpers ------------------------------------------------------------------
@@ -78,29 +75,6 @@ class Pacer:
         if time.monotonic() - self.next > self.period:   # overrun: restart the grid
             self.next = time.monotonic()
         self.stamps.append(time.monotonic())
-
-
-class TempWatch:
-    """Whether a housing has stayed at ``limit_c`` or above for ``hold_s`` of ticks. A single frame can read double the real
-    temperature, so one hot reading must not count."""
-
-    def __init__(self, limit_c: float, hold_s: float = TEMP_HOLD_S):
-        self.limit_dc = limit_c * 10.0
-        self.hold_ticks = hold_s / 0.005
-        self.since = [None] * 12
-
-    def update(self, st) -> float | None:
-        """A frame; returns the temperature [degC] of a servo that has stayed hot, or None."""
-        tick = int(st.tick)
-        for i, t in enumerate(st.temp_dc):
-            if t < self.limit_dc:
-                self.since[i] = None
-                continue
-            if self.since[i] is None:
-                self.since[i] = tick
-            if ((tick - self.since[i]) & 0xFFFFFFFF) >= self.hold_ticks:
-                return float(t) / 10.0
-        return None
 
 
 def smoothstep(x: float) -> float:
@@ -237,30 +211,18 @@ def after_our_arm(link: Link, first_seq: int | None, st) -> bool:
     return (st.seq - first_seq) & 0xFFFF <= (link.last_seq - first_seq) & 0xFFFF
 
 
-def servo_temp(st) -> str:
-    """The fault servo and its housing temperature, as STATE reports them."""
-    i = int(st.fault_servo)
-    return f"servo {i} at {st.temp_dc[i - 1] / 10:.1f} degC" if 1 <= i <= 12 else "a servo (not named)"
-
-
 def check_flags(link: Link, mover=None) -> None:
-    """Raise if the reader stopped, or, in a STATE that answers our frames since our ARM (``mover.first_seq``; an earlier
-    one may still show a flag our CLEAR | ARM has cleared): the firmware refused our ARM for a hot servo (``ST_HOT``),
-    disarmed on a temperature, current, board, watchdog or refused ARM, or is not armed (an IDLE or DISARM from another
-    port)."""
+    """Raise if the reader stopped, or if, once we have armed (``mover.first_seq``), a STATE that answers our frames since
+    our ARM shows the firmware not armed: it refused the ARM or disarmed, by its own rules. An earlier STATE may still show
+    the state before our ARM and is not judged. The message names the flags the STATE reports."""
     link.check()
     st = link.latest
     first = None if mover is None else mover.first_seq
-    if st is None or not after_our_arm(link, first, st):
+    if st is None or first is None or not after_our_arm(link, first, st):
         return
-    if st.flags & p.ST_HOT and not st.armed:
-        raise LinkError(f"{servo_temp(st)}: the firmware refused to arm (45 degC or above)")
-    if st.flags & p.ST_FAULT_TEMP:
-        raise LinkError(f"{servo_temp(st)}: the firmware disarmed at 55 degC")
-    if st.flags & (p.ST_FAULTS | p.ST_WATCHDOG | p.ST_REJECTED):
-        raise LinkError("ESP32 disarmed: %s (servo %d)" % (", ".join(st.flag_names()), st.fault_servo))
-    if first is not None and not st.armed:
-        raise LinkError("ESP32 disarmed after our ARM (an IDLE or DISARM from another port?)")
+    if not st.armed:
+        raise LinkError("the firmware is not armed: it refused the ARM or disarmed (STATE flags: %s)"
+                        % (", ".join(st.flag_names()) or "none"))
 
 
 def parent_made(path) -> str:
@@ -582,27 +544,17 @@ def cmd_stream(link: Link, a) -> None:
     link.record = []
     start = present(link)
     preflight(link, a.clear)
-    t0 = link.latest.temp_dc.astype(float) / 10
-    if t0.max() >= min(a.stop_c, STREAM_START_C):
-        raise LinkError("a housing is at %.1f C (servo %d): let it cool before a stream"
-                        % (t0.max(), int(np.argmax(t0)) + 1))
     fd = _stdin_fd()
     mover = Mover(link, 0x0FFF, a.cap, a.clear, band_deg=band, getup=True, max_step_deg=STREAM_STEP_DEG)
     pacer = Pacer(0.02)
     first = clip_band(stand, stand + delta[0], band)
     reason, t_play = None, [None, None]
-    t_first = time.monotonic()
     idx, end_hit = 0, None
-    hot = TempWatch(a.stop_c)
 
     def stop_reason() -> str | None:
         st = link.latest
         if time.monotonic() - st.t_rx > STREAM_GAP_S:
             return "state_gap"
-        if not st.getup and time.monotonic() - t_first > STREAM_ECHO_S:
-            return "no_getup_echo"
-        if hot.update(st) is not None:
-            return "temperature"
         if _enter_pressed(fd):
             return "enter"
         return None
@@ -653,19 +605,15 @@ def cmd_stream(link: Link, a) -> None:
         if play:
             cur = np.abs(np.array([s.cur_ma for s in play], dtype=float))
             print("playback p99 |I| mA:", " ".join("%d" % v for v in np.percentile(cur, 99, axis=0)))
-        if reason == "no_getup_echo":
-            print("stream: no get-up mode echo (a firmware without it): stopped and returned", flush=True)
         if end_hit is not None:
             print("stream: servo %d (%s) measured at %d dd, within %g deg of a track end: stopped and returned"
                   % (end_hit[0], NAMES[end_hit[0] - 1], end_hit[1], TRACK_END_DEG), flush=True)
-        echo = sum(1 for s in play if s.getup) / len(play) if play else None
-        print("stream %s; targets clipped on %d sends; get-up mode echoed on %s of playback frames"
-              % (reason or "completed", mover.clipped, "-" if echo is None else "%.0f %%" % (100 * echo)), flush=True)
+        print("stream %s; targets clipped on %d sends" % (reason or "completed", mover.clipped), flush=True)
         if a.log:
             save_log(link, a.log, pacer,
                      {"cmd": "stream", "file": a.file, "period_s": period, "stand": stand.tolist(), "cap": a.cap,
                       "band_deg": band.tolist(), "stop_reason": reason or "completed", "clipped_sends": mover.clipped,
-                      "t_play": t_play, "stop_c": a.stop_c, "getup_echo_share": echo,
+                      "t_play": t_play,
                       "max_step_deg": mover.max_step_deg, "track_end_deg": TRACK_END_DEG, "track_end_servo": end_hit},
                      states=states)
 
@@ -951,11 +899,10 @@ def main(argv=None) -> int:
     s.add_argument("--hex", action="store_true", help="the raw 32-bit words instead of the floats")
     s.add_argument("--out", help="also write them to this JSON file")
     sub.add_parser("scale", help="read each servo's range_position_deg against 3100 dd (read-only)")
-    s = sub.add_parser("stream", help="play a get-up on a lifted robot, in the firmware's get-up current mode")
+    s = sub.add_parser("stream", help="play a get-up on a lifted robot, in the firmware's get-up mode")
     s.add_argument("file", help="npz with delta_dd (N x 12, targets minus the stand) and period_s")
     s.add_argument("--cap", type=int, default=600,
                    help="frame cap mA; in control mode 1 a duty cap of kff x cap (default %(default)s: duty 0.6)")
-    s.add_argument("--stop-c", type=float, default=55.0, help="any housing at this degC for 1 s stops (default %(default)s)")
     s.add_argument("--clear", action="store_true", help="clear a latched fault before arming")
     s.add_argument("--log", help="the .npz log")
     s = sub.add_parser("offsets", help="read the calibration offsets stored on the robot")

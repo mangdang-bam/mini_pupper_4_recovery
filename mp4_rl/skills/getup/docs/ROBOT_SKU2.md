@@ -1,9 +1,10 @@
 # The walker and the get-up on the Mini Pupper v4 (SKU2)
 
-Two policies run together on a Mini Pupper v4 (SKU2): the long body with a Raspberry Pi 5, the 3S LiPo inside. The Pi runs
-the policies at 50 Hz and sends servo targets over UART to the ESP32 board. The **walker** (`mp4_rl/skills/walker/policies/sku2`) stands, walks
-and rides out shoves. The **get-up** (`mp4_rl/skills/getup/policies/sku2`) takes over when the runner detects a fall, and hands back once the
-robot stands: the walk, shove, fall, get-up, walk sequence.
+Two policies run together on a Mini Pupper v4 (SKU2): the long body with a Raspberry Pi 5, the 3S LiPo inside. The
+runner on the Pi (`mp4_rl/deploy/runner/`) runs the policies at 50 Hz and sends servo targets over UART to the ESP32
+board. The **walker** (`mp4_rl/skills/walker/policies/sku2`) stands, walks and rides out shoves. The **get-up**
+(`mp4_rl/skills/getup/policies/sku2`) takes over when the runner detects a fall, and hands back once the robot stands:
+the walk, shove, fall, get-up, walk sequence.
 
 The shipped calibration and joint limits are those of the unit the policies were trained for and measured on. On any
 other unit, go through [Adapting to another unit](#adapting-to-another-unit) first.
@@ -27,23 +28,11 @@ ESP32-S3: the Pi sends it the servo targets over UART, in walking and in get-up 
 describes. Flashing keeps the calibration offsets.
 
 **Never flash a factory-profile build** (`sdkconfig.defaults.factory`): it writes an identity into the ESP32's eFuses at
-first boot, which can't be undone. The runner goes limp when the firmware doesn't echo the get-up mode.
+first boot, which can't be undone.
 
-What the firmware does on its own:
-
-| Guard | Limit | Result |
-|---|---|---|
-| Link watchdog | no frame for 100 ms | every servo idle |
-| Current, walking | any driven servo above 1500 mA for 500 ms | every servo idle, latched |
-| Current, get-up mode | **none** | see [No current guard in get-up mode](#no-current-guard-in-get-up-mode) |
-| Temperature, at arming | any servo at 45 °C or above | the ARM is refused (STATE flag HOT, the hottest servo named) |
-| Temperature, both modes | a driven servo at 55 °C or above for 1 s | every servo limp at once, latched |
-| Servo board | silent for 100 ms | every servo idle, latched |
-| Tick | stalled for 500 ms | the ESP32 reboots, every servo idle |
-
-Each servo's temperature is the median of its last three readings, so one glitched frame never counts; a servo with no valid
-reading for 250 ms isn't counted until it has three again. On a temperature trip there is no ramp to the stand: the robot drops.
-The runner and `mp4link` stop when the firmware refuses their ARM or disarms on a temperature. Calibration offsets are stored on the ESP32, up to ±120°.
+The firmware's safeguards are its own, as its documentation describes. When it refuses an ARM or disarms, the runner
+and `mp4link` stop at once with `the firmware is not armed: it refused the ARM or disarmed`, followed by the STATE flags
+it reports. Calibration offsets are stored on the ESP32, up to ±120°.
 
 ## Deploying
 
@@ -54,11 +43,12 @@ tools/deploy.sh ubuntu@PI walk
 ```
 
 `ubuntu@PI` is the Pi's user and address (for example `ubuntu@raspberrypi.local`), and `walk` the folder in its home directory.
-This copies the runner, the two policy folders (each with the calibration and joint limits it was exported for), three
-files from the installed `mp4_sim` (`__init__.py`, `calibration.py` and the IMU mounting, `imu_mount.json`), and any
-`runs/streams/` into `~/walk` on the Pi, and runs `runner check` on each policy
-there; a failed check prints `FAIL` and stops the script. Redeploy after changing a calibration or a policy. The runner reads
-the calibration from each policy folder and refuses a walker and a get-up exported for different calibrations.
+This copies the runner and the servo link (`mp4_rl/deploy/`), the policy interface, the two policy folders (each with
+the calibration and joint limits it was exported for), three files from the installed `mp4_sim` (`__init__.py`,
+`calibration.py` and the IMU mounting, `imu_mount.json`), and any `runs/streams/` into `~/walk` on the Pi, in the
+package's own layout, and runs `runner check` on each policy there; a failed check prints `FAIL` and stops the script.
+Redeploy after changing a calibration or a policy. The runner reads the calibration from each policy folder and refuses
+a walker and a get-up exported for different calibrations.
 
 ## Start-up checks
 
@@ -70,8 +60,8 @@ If `ping` says `IMU ABSENT`: Pi off (`sudo poweroff`, then unplug), board off, U
 ```sh
 ssh -t ubuntu@PI                    # -t: Enter, the graceful stop, needs a terminal
 cd ~/walk
-M="env PYTHONPATH=src python3 -B -m mp4_rl.deploy.mp4link"
-R="env PYTHONPATH=src python3 -B -m mp4_rl.deploy.runner"
+M="python3 -B -m mp4_rl.deploy.mp4link"
+R="python3 -B -m mp4_rl.deploy.runner"
 fuser /dev/ttyAMA0                  # must print nothing: nothing else holds the link
 $M ping --seconds 2                 # STATE at about 200 Hz, 0 CRC errors, IMU ok, fresh feedback from all four legs
 vcgencmd get_throttled              # 0x0 is good; 0x50005 is under-voltage right now
@@ -120,17 +110,15 @@ $M stream runs/streams/getup_back_s14_x1p00.npz --cap 2000 --log logs/lifted_bac
 cap: 600 (duty 0.6) is plenty at 25 %, and 2000 gives the full duty (0.99) the runner's get-up uses.
 
 Each one ramps from where the legs are to the first pose in 2 s, holds 1 s, plays, ramps back to the stand in 1 s, holds 1 s
-and goes limp. It runs in the firmware's get-up mode, so **there's no current guard**. It starts only below 45 °C, refuses a
-file with a target near a track end, and stops and returns to the stand if a joint reads within 15° of one, a housing holds
-55 °C for 1 s (`--stop-c`), or the firmware doesn't echo the get-up mode.
+and goes limp. It runs in the firmware's get-up mode. It refuses a file with a target near a track end, and stops and
+returns to the stand if a joint reads within 15° of one.
 
 Watch for a leg hitting the body or another leg, a joint moving the wrong way or lagging far behind the others, and any grinding
 or clicking from an abduction. **Enter** stops and returns to the stand; Ctrl-C goes limp at once. Stop for good if you see any
 of these, and sort out the cause before a floor run.
 
-The summary should say `stream completed`, with 0 targets clipped (a frame or two from tick rounding is fine) and the get-up
-mode echoed on 100 % of frames. Check the abductions by hand, and the temperature between files
-(`$M ping --seconds 1 | grep "max temp"`). Then start floor get-ups with `--getup-max 1`.
+The summary should say `stream completed`, with 0 targets clipped (a frame or two from tick rounding is fine). Check the
+abductions by hand between files. Then start floor get-ups with `--getup-max 1`.
 
 ## Launching
 
@@ -191,8 +179,8 @@ stateDiagram-v2
 
 - **Hand-back:** tilt under 12°, gyro under 0.8 rad/s and the pose within 10° rms of the stand, all held for 25 steps (0.5 s).
 - **Soft faults:** an invalid IMU frame, a non-finite action, a gap in the STATE frames, two late steps in a row.
-- **Limp at once, from any state:** Ctrl-C, a link fault or firmware guard, a target that fails its check, no get-up echo from
-  the firmware for 0.2 s.
+- **Limp at once, from any state:** Ctrl-C, a link fault, the firmware refusing the ARM or disarming, a target that fails
+  its check.
 
 ### Refusals before arming
 
@@ -204,8 +192,8 @@ stateDiagram-v2
   walker and a get-up that carry different calibrations.
 - A policy whose bounds were made for another calibration.
 - A gyro bias over 0.02 rad/s on any axis in the first second: the robot moved. Keep it still and launch again.
-- In the firmware: an ARM while a servo is at 45 °C or above. The runner stops at once with `servo N at X degC: the firmware
-  refused to arm`; let that servo cool and launch again.
+- The firmware refusing the ARM, by its own rules: the runner stops at once with `the firmware is not armed: it refused
+  the ARM or disarmed` and the STATE flags it reports.
 
 ## Placing it
 
@@ -230,18 +218,6 @@ For `--start-mode getup`:
 - **The IMU is on the ESP32 board:** keep the board in its original mounting. The Pi can sit elsewhere, rigidly fixed, inside
   the body's footprint.
 
-### Temperatures
-
-```sh
-$M ping --seconds 1 | grep "max temp"
-```
-
-The firmware holds the temperature rules: it refuses to arm with a servo at 45 °C or above, and goes limp at once when a driven
-servo stays at 55 °C or above for 1 s. The runner, `stream`, `centre` and `calib` stop on either, naming the servo and its
-temperature (`the firmware refused to arm`, `the firmware disarmed at 55 degC`). The front-right abduction and hip run warmest: 42-45 °C after a long standing run, so
-the next arm can be refused. Off load they cool about 3 °C in a few minutes. A raw reading can spike for one frame: check
-again before worrying.
-
 ## Stopping
 
 - **Enter** (in the `ssh -t` terminal): standing or walking, it ramps to the stand, holds, then goes limp. In a get-up, limp at
@@ -249,28 +225,17 @@ again before worrying.
 - **Ctrl-C**, or `tools/stop.sh ubuntu@PI` from any terminal on the workstation: limp at once, the body drops, the log is saved.
 - **The servo power switch** cuts everything.
 
-The firmware's walking current guard and temperature cut-out latch: the next launch is refused until you add `--clear`. Look
-at why first.
+A fault the firmware latches refuses the next launch until you add `--clear`. Look at why first.
 
-## No current guard in get-up mode
+## Safety
 
-**Nothing limits or stops the current during a get-up.** The firmware's current guard is off in that mode, because a get-up holds
-joints near stall and the walking guard would trip. The frame's 2 A cap doesn't help: in the servos' control mode it only limits
-duty, to `min(0.99, 0.001 × 2000)`, so 0.99. The runner prints an advisory above 1.2 A for over 1 s, logs it and carries on.
-
-So a jammed joint or a snagged leg is driven at full duty until the robot stands, the 20 s timeout ends the get-up, the
-temperature cut-out trips or you stop it.
-
-**The abduction gears are what this puts at risk.** The servo module's abduction gear train is the robot's weak part: on two bench
-units it failed with a wedging tooth, from the dynamic torque of arresting a heavy load at high gain, and a static torque cap
-didn't protect it. A back flip's landing loads it, and nothing measures that on the robot. Expect wear, and possibly a break:
+**The abduction gears.** The servo module's abduction gear train is the robot's weak part: on two bench units it failed
+with a wedging tooth, from the dynamic torque of arresting a heavy load at high gain. A back flip's landing loads it, and a
+get-up holds joints near stall at full duty until the robot stands. Expect wear, and possibly a break:
 
 - check the abductions by hand after back flips and shoves, and stop if one feels rough or has new play;
 - keep a spare servo module on the bench;
-- don't let it retry for long. The housing temperature lags: about 5 °C at the housing has been measured against about 40 °C at
-  the winding, so repeated attempts heat the motors far more than the temperature rules see;
-- the default budget (`--getup-max 10`, `--getup-timeout 20`) can mean long periods of near-stall drive with no current guard. Use
-  `--getup-max 1` while testing a new policy, and check the temperature between runs.
+- don't let it retry for long: use `--getup-max 1` while testing a new policy, and let the servos cool between runs.
 
 **Never command joints near the potentiometer track ends.** Beyond each end lies a dead zone where the position can't be read.
 The policies' bounds keep every target at least 20° inside on the hips and knees, and the runner refuses a target within 15° of
@@ -299,8 +264,6 @@ come from the runner's log, speeds from the distance on a tape measure over the 
 - **Lifting the robot by hand during a run counts as a fall** and uses a get-up. Stop the run first.
 - **A retry** starts 5 s after the start of a failed attempt (the 4 s phase clock plus `--getup-phase-restart`'s 1 s),
   whenever the attempt failed. It's a runner rule, not a learned behaviour.
-- **If it goes limp at the walker's first step** with `watchdog` in the message, nothing is wrong with the robot: stand it up and
-  launch again. `tools/first_step_timing.py --starts 10` measures that first step on the Pi, without motors.
 
 ## Comparing a run with the simulation
 
@@ -330,7 +293,7 @@ lists until the stand looks right, and `s` saves them. Offsets are limited to ±
 and `$M calib --zero ID` afterwards.
 
 **2. Make the calibration file and re-export both policies' bounds.** On the Pi, `$M offsets --json offsets.json`; copy the file to the
-workstation; then, at the repository root with the virtual environment active ([INSTALL.md](../../../docs/INSTALL.md)):
+workstation; then, at the repository root with the virtual environment active ([INSTALL.md](../../../../docs/INSTALL.md)):
 
 ```sh
 .venv/bin/python tools/make_contract.py offsets.json --note "unit 2" --out my_robot/sku2_contract.json
@@ -365,7 +328,7 @@ the knee's whole fold: it prints each servo's running minimum and maximum, in de
 joint is `signs_dd_to_phys` in the limits file), and saves them in its log. If your unit's ranges are no narrower than the table,
 nothing changes. If one is narrower, write your values into a copy of `sku2_joint_limits.json` (its `conventions` explain each
 field), set its `contract_sha256_prefix` to the first 12 hex digits of your calibration's sha256, and install it into a source
-checkout of `mp4_sim` installed in editable mode ([INSTALL.md](../../../docs/INSTALL.md#another-units-joint-limits); the
+checkout of `mp4_sim` installed in editable mode ([INSTALL.md](../../../../docs/INSTALL.md#another-units-joint-limits); the
 next re-export copies it into the policy folders):
 
 ```sh

@@ -67,6 +67,25 @@ def test_run_refuses_pwm_scale_off_by_more_than_2_percent(robot, tmp_path, monke
     assert not robot.armed_seen
 
 
+def test_run_refuses_a_gain_that_does_not_read_back(robot, tmp_path, monkeypatch):
+    """A servo that keeps another kp_position than the runner writes: refused before arming."""
+    real = robot._request
+
+    def other(frame):
+        _, cmd, sid, pad, _, _ = rn.p.REQ.unpack(frame[:8])
+        if cmd == rn.p.CMD_SET_PARAM and pad == rn.p.PARAM_ID["kp_position"] and sid == 7:
+            frame = rn.p.pack_request(cmd, sid, *rn.p.float_args(40.0), pad=pad)
+        real(frame)
+    monkeypatch.setattr(robot, "_request", other)
+    try:
+        go(robot, tmp_path)
+    except SystemExit as exc:
+        assert "servo 7 kp_position = 40, not 80 after writing it" in str(exc)
+    else:
+        raise AssertionError("no refusal")
+    assert not robot.armed_seen
+
+
 def test_step_limit_acts(robot, tmp_path):
     rc, z, _ = go(robot, tmp_path, walker_bias=1.0, seconds=0.2)
     step = np.abs(np.diff(z["rel"], axis=0))
@@ -78,33 +97,36 @@ def test_refuses_without_imu(robot, tmp_path):
     try:
         go(robot, tmp_path)
     except SystemExit as exc:
-        assert "IMU" in str(exc)
+        assert str(exc).startswith("IMU absent")
     else:
         raise AssertionError("no refusal")
-
-
-def test_a_refused_arm_for_a_hot_servo_stops_the_run(robot, tmp_path):
-    """The firmware refuses the ARM (a servo at 45 degC or above, ``ST_HOT``): the runner stops at the first STATE after
-    its arming frame, naming the servo and its temperature, and nothing moves."""
-    robot.temps_dc[4] = 461
-    rc, _, meta = go(robot, tmp_path, seconds=1.0)
-    assert rc == 0 and meta["stop_reason"].startswith("disarm: link: servo 5 at 46.1 degC: the firmware refused to arm")
     assert not robot.armed_seen
 
 
-def test_a_temperature_trip_stops_the_run(robot, tmp_path):
-    """The firmware disarms after a driven servo has been at 55 degC for 1 s (``ST_FAULT_TEMP``): the runner stops with
-    the servo and its temperature."""
+def test_a_refused_arm_stops_the_run(robot, tmp_path):
+    """The firmware refuses the ARM by its own rules: the runner stops at the first STATE after its arming frame, naming
+    the STATE flags, and nothing moves."""
+    robot.refuse_arm = True
+    rc, _, meta = go(robot, tmp_path, seconds=1.0)
+    assert rc == 0 and meta["stop_reason"].startswith("disarm: link: the firmware is not armed: it refused the ARM or "
+                                                      "disarmed (STATE flags: imu, rejected)")
+    assert not robot.armed_seen
+
+
+def test_a_disarm_by_the_firmware_stops_the_run(robot, tmp_path):
+    """The firmware disarms by its own rules during the policy loop: the runner stops, limp, naming the STATE flags."""
     orig = robot.before_tick
 
     def tick():
         orig()
-        if len(robot.armed_seen) > POLICY_START + 20:
-            robot.temps_dc[1] = 562
+        if len(robot.armed_seen) > POLICY_START + 20 and robot.armed:
+            robot.armed = False
+            robot.latched |= rn.p.ST_FAULT_BOARD
     robot.before_tick = tick
-    rc, _, meta = go(robot, tmp_path, seconds=4.0)
-    assert rc == 0 and "servo 2 at 56.2 degC: the firmware disarmed at 55 degC" in meta["stop_reason"]
-    assert not robot.armed
+    rc, z, meta = go(robot, tmp_path, seconds=4.0)
+    assert rc == 0 and meta["stop_reason"] == ("disarm: link: the firmware is not armed: it refused the ARM or disarmed "
+                                               "(STATE flags: fault-board, imu)")
+    assert len(z["tick"]) < 100 and sent_after_last_step(tmp_path, z) <= 2
 
 
 def test_offsets_within_a_degree_warn_only(robot, tmp_path):
@@ -190,14 +212,6 @@ def test_one_fall_past_the_maximum_goes_limp(robot, tmp_path):
     _, _, meta = go(robot, tmp_path, "--getup-max", "2", seconds=10.0)
     assert meta["stop_reason"].startswith("disarm: fall 3 (") and "--getup-max 2 reached" in meta["stop_reason"]
     assert [e["end"] for e in meta["getups"]] == ["hand-back"] * 2
-
-
-def test_missing_echo_disarms(robot, tmp_path):
-    robot.echo = False
-    robot.script, robot.script_at = roll([(0.3, 90.0)]), POLICY_START + 20
-    _, _, meta = go(robot, tmp_path, seconds=3.0)
-    assert meta["stop_reason"] == "disarm: get-up: no ST_GETUP echo"
-    assert any("echo" in w for w in meta["warnings"])
 
 
 def test_fall_in_the_stand_ramp_starts_in_getup(robot, tmp_path):
@@ -370,30 +384,7 @@ def test_a_bad_target_in_the_loop_disarms(robot, tmp_path, monkeypatch):
     assert sent_after_last_step(tmp_path, z) == 1
 
 
-# ---- the watches ---------------------------------------------------------------------------------------------------
-def stall(amps, servo=2):
-    def f(i, pos, tgt):
-        return amps * 1000.0 if i == servo else 0.0
-    return f
-
-
-def test_current_watch_flags_a_long_stall_and_never_stops(robot, tmp_path, capsys):
-    robot.current_fn = stall(1.6)
-    robot.guard_cur = (100000, 10.0)
-    robot.script, robot.script_at = roll([(0.3, 90.0)]), POLICY_START + 10
-    _, z, meta = go(robot, tmp_path, "--getup-timeout", "2.5", seconds=4.0)
-    assert meta["stop_reason"].startswith("disarm: get-up: not up")
-    (flag,) = meta["current_flags"]
-    assert flag["servo"] == 3 and flag["seconds_over"] > 1.0 and flag["peak_A"] == 1.6
-    assert "ADVISORY" in capsys.readouterr().out and z["current_flagged"].any()
-
-
-def test_current_watch_is_silent_while_walking(robot, tmp_path):
-    robot.current_fn = stall(1.3)
-    _, _, meta = go(robot, tmp_path, seconds=1.5)
-    assert meta["stop_reason"] == "completed" and not meta["current_flags"]
-
-
+# ---- the reading watch ---------------------------------------------------------------------------------------------
 def test_reading_near_end_rule():
     r = rn.reading_near_end(np.array([0, 50, 51, 1550, 3049, 3050, 3112, 2000, 2000, 2000, 2000, 2000]))
     assert r.tolist() == [True, True, False, False, False, True, True, False, False, False, False, False]

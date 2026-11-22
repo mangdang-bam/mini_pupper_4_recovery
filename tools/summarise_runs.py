@@ -43,7 +43,7 @@ def summarise(base: Path) -> dict:
            "peak_A": float(cur.max()) if cur.size else 0.0, "temp_start": float(temp[0].max()) if len(temp) else 0.0,
            "temp_peak": float(median3(temp).max()) if len(temp) else 0.0, "temp_raw": float(temp.max()) if len(temp) else 0.0,
            "tilt_max": float(np.nanmax(z["tilt_cf_deg"])) if len(z["tick"]) else 0.0,
-           "current_flags": len(m.get("current_flags") or []), "reading_flags": len(m.get("reading_flags") or []),
+           "reading_flags": len(m.get("reading_flags") or []),
            "first_step_gap_ms": first_step_gap_ms(z, r), "events": []}
     phase = float(m.get("getup_phase_s", 4.0) or 4.0) + float(m.get("getup_phase_restart_s", 1.0) or 1.0)
     last_tick = int(z["tick"][-1]) if len(z["tick"]) else 0
@@ -137,7 +137,7 @@ def main(argv=None) -> int:
         print(f"{r['name']:12s} steps {r['steps']:4d} cmd {r['cmd']} {r['start_mode']:5s} get-ups {len(ev)} up {sum(e['up'] for e in ev)} "
               f"first {sum(e['first'] for e in ev)} cut off {sum(e['cut_off'] for e in ev)} restarts {[e['restarts'] for e in ev]} "
               f"t {times} peak {r['peak_A']:.2f} A T {r['temp_start']:.1f}->{r['temp_peak']:.1f} C (raw {r['temp_raw']:.1f}) "
-              f"tilt max {r['tilt_max']:.0f} flags {r['current_flags']} {r['reading_flags']} first-step gap {gap} ms; {r['stop']}")
+              f"tilt max {r['tilt_max']:.0f} near-end readings {r['reading_flags']} first-step gap {gap} ms; {r['stop']}")
         for i, e in enumerate(ev if a.attempts else []):
             kind = "placed" if e["placed"] else "fall"
             print(f"  {kind} {i + 1} {e['side']} {e['end'] or ('cut off' if e['cut_off'] else 'no end')}: " + ", ".join(

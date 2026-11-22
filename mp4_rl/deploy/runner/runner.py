@@ -19,7 +19,7 @@ loop starts in the get-up.
 
 **A fall** (``estimators.FallDetector`` on the complementary-filter tilt) during the ramp or walking switches to the get-up
 policy at the next step: its decoder seeded from the measured pose, the observation rebuilt, the command inputs carrying its
-phase clock, and SA_GETUP on every SET_ALL (the firmware's get-up mode: current guard off; its ST_GETUP echo must follow within 0.2 s).
+phase clock, and SA_GETUP on every SET_ALL (the firmware's get-up mode).
 **A retry:** when the phase has been at its end for ``--getup-phase-restart`` s and the tilt is still above 45 deg, the clock
 restarts. **The hand-back:** tilt < 12 deg, |gyro| < 0.8 rad/s and the pose within 10 deg rms of the stand (``--handback-tilt``,
 ``--handback-gyro``, ``--handback-rms``), held for 25 steps, returns to the walking policy, its decoder seeded from the measured
@@ -30,9 +30,9 @@ pose and the heading re-latched. Not up after
 row: ramp to the stand, hold, disarm; during a get-up, limp at once (no ramp from a fallen pose). Ctrl-C, a
 link fault or a target that fails its check: limp at once. A latched fault refuses the next launch until ``--clear``.
 
-**The first step.** The firmware disarms 100 ms after the last frame, and between the ramp's last send and the first step nothing
-else is sent. So one step of each policy runs before arming (``Runner.warm_up``: first calls are slow, and hold the interpreter),
-and until the first step the last target is repeated on every STATE frame (``Runner.keep_fed``).
+**The first step.** The firmware disarms when frames stop for 100 ms, and between the ramp's last send and the first step
+nothing else would be sent. So one step of each policy runs before arming (``Runner.warm_up``: first calls are slow, and hold
+the interpreter), and until the first step the last target is repeated on every STATE frame (``Runner.keep_fed``).
 
 **Calibration.** Each policy folder carries the calibration it was exported for (``sku2_contract.json``); the runner
 reads it from there and refuses a folder without one, a calibration the policy was not exported for, and a walking and
@@ -42,14 +42,15 @@ a get-up policy with different calibrations (``checks.folder_calibration``, ``ch
 **Refusals before arming.** A latched fault, a servo gain that does not read back (pwm_scale, register 12: within 2 % of
 0.001), no valid IMU, a joint reading within 10 deg of a track end, a policy trained on another servo model or robot model
 (``checks.robot_refusal``), a policy whose bounds were made for another calibration (``checks.band_refusal``), a decoder
-that can reach a target too near a track end (``checks.decoder_selftest``), a gyro bias over ``GYRO_BIAS_MAX``. The servos'
-temperatures are the firmware's to guard: it refuses an ARM while a servo is at 45 degC or above and goes limp when a
-driven servo stays at 55 degC for 1 s; the runner stops at the first STATE after its arming frame that shows either,
-naming the servo and its temperature (``cli.check_flags``). A difference between the robot's offsets and the contract's
-is printed and logged.
+that can reach a target too near a track end (``checks.decoder_selftest``), a gyro bias over ``GYRO_BIAS_MAX``. A
+difference between the robot's offsets and the contract's is printed and logged.
 
-**Watches (they print and log; nothing stops).** During a get-up, a servo above 1.2 A for more than 1 s. At the start and
-during a get-up, a position reading within 5 deg of a track end.
+**The firmware's safeguards are the firmware's.** It decides by its own rules when to refuse an ARM or to disarm; the
+runner stops, limp, at the first STATE after its arming frame that shows the firmware not armed, and names the STATE
+flags (``cli.check_flags``).
+
+**The reading watch (it prints and logs; nothing stops).** At the start and during a get-up, a position reading within
+5 deg of a track end.
 
 **Position feedback.** Every STATE frame's joint readings go through the link's plausibility filter
 (``runner/feedback.py``): the observation, the hand-back, the decoder's restarts and the reading watch use the filtered
@@ -139,9 +140,7 @@ GYRO_BIAS_MAX = 0.02
 CAP_MA = 2000                  # the frame's cap: in the servos' control mode 1, duty <= min(max_pwm, kff x cap)
 HOLD_AFTER_S = 5.0             # at the stand before disarming at the end of a run
 HANDBACK_TILT_DEG, HANDBACK_GYRO, HANDBACK_RMS_DEG, HANDBACK_STEPS = 12.0, 0.8, 10.0, 25
-ECHO_TIMEOUT_S = 0.2
 PHASE_RESTART_TILT_DEG = 45.0
-WATCH_AMPS, WATCH_S = 1.2, 1.0
 READING_WATCH_DEG = 5.0
 READING_WATCH_DD = READING_WATCH_DEG * 10.0
 MODE_WALK, MODE_GETUP = 0, 1
@@ -259,7 +258,7 @@ class Runner:
         self.last_dd = None
         self.steps: dict[str, list] = {k: [] for k in (
             "tick", "t_rx", "t_send", "seq", "obs", "raw", "rel", "dd", "tilt_deg", "late", "heading_psi", "heading_integ",
-            "heading_err", "wz_cmd", "cmd", "mode", "tilt_cf_deg", "gyro_norm", "getup_echo", "cur_max_a", "current_flagged",
+            "heading_err", "wz_cmd", "cmd", "mode", "tilt_cf_deg", "gyro_norm", "getup_echo", "cur_max_a",
             "reading_flagged")}
         self.stop_reason = ""
         self.warnings: list[str] = []
@@ -276,10 +275,6 @@ class Runner:
         self._gf_tick = None
         self._rec_i = 0
         self.getups: list[dict] = []
-        self.current_flags: list[dict] = []
-        self._cw_tick = None
-        self._cw_over = np.zeros(12)
-        self._cw_active: list[dict | None] = [None] * 12
         self.reading_flags: list[dict] = []
         self._rw_seen: dict[int, dict] = {}
         self._rw_tick0 = None
@@ -350,7 +345,8 @@ class Runner:
         return seq
 
     def watch(self) -> None:
-        """After each send: the link, the firmware's state since our ARM (a refused ARM, a fault, a disarm), IMU, Enter."""
+        """After each send: the link, the firmware's state since our ARM (not armed: it refused the ARM or disarmed), IMU,
+        Enter."""
         try:
             check_flags(self.link, self)
         except Exception as exc:
@@ -409,46 +405,6 @@ class Runner:
         self._rec_i = len(rec)
         if self.fall_pending and self.stand_phase:
             raise FallDetected(self.fall.trigger)
-
-    # ---- the current watch (get-up only; it prints and logs, nothing stops) -----------------------------------------
-    def current_watch_reset(self, why: str = "mode change") -> None:
-        for ev in self._cw_active:
-            if ev is not None:
-                ev.setdefault("end", why)
-        self._cw_tick = None
-        self._cw_over = np.zeros(12)
-        self._cw_active = [None] * 12
-
-    def current_watch(self, s, getup_n: int) -> None:
-        """A servo above ``WATCH_AMPS`` for more than ``WATCH_S``: printed and flagged once per episode."""
-        tick = int(s.tick)
-        if self._cw_tick is not None:
-            gap = (tick - self._cw_tick) & 0xFFFFFFFF
-            if gap == 0 or gap >= 0x80000000:
-                return
-            dt = min(gap, 20) * 0.005
-        else:
-            dt = 0.005
-        self._cw_tick = tick
-        amps = np.abs(np.asarray(s.cur_ma, dtype=float)) / 1000.0
-        over = amps > WATCH_AMPS
-        self._cw_over = np.where(over, self._cw_over + dt, 0.0)
-        names = self.c.meta.get("servo_order") or [str(i + 1) for i in range(12)]
-        for i in range(12):
-            ev = self._cw_active[i]
-            if over[i] and ev is None and self._cw_over[i] > WATCH_S + 1e-9:
-                ev = {"servo": i + 1, "name": names[i], "getup": getup_n, "tick": tick, "seconds_over": 0.0, "peak_A": 0.0}
-                self._cw_active[i] = ev
-                self.current_flags.append(ev)
-                self.out(f"ADVISORY (log only): servo {i + 1} ({names[i]}) above {WATCH_AMPS:g} A for "
-                         f"{WATCH_S:g} s in GETUP {getup_n} ({amps[i]:.2f} A)")
-            if ev is not None:
-                if over[i]:
-                    ev["seconds_over"] = float(self._cw_over[i])
-                    ev["peak_A"] = max(ev["peak_A"], float(amps[i]))
-                else:
-                    ev["end"], ev["end_tick"] = "below", tick
-                    self._cw_active[i] = None
 
     # ---- the reading watch (the run's start and get-ups; it prints and logs, nothing stops) --------------------------
     def reading_watch_reset(self) -> None:
@@ -514,7 +470,7 @@ class Runner:
             heading.reset()
 
     def keep_fed(self) -> None:
-        """The last target again, so that the firmware's watchdog does not run down while the first step waits for its frames."""
+        """The last target again, so that the firmware keeps the servos armed while the first step waits for its frames."""
         if self.armed:
             self.send(self.last_dd)
 
@@ -580,7 +536,7 @@ class Runner:
         k_mode = 0                            # steps since the current mode began
         if start_getup:
             self.fall_pending = True
-        g_entry = g_echo = g_phase = 0        # the get-up's entry tick, last echo tick, phase clock's origin tick
+        g_entry = g_phase = 0                 # the get-up's entry tick, the phase clock's origin tick
         hb_run = 0                            # consecutive steps meeting the hand-back criterion
         for k in range(n_steps):
             while True:                       # every frame up to the step's tick, in order
@@ -600,9 +556,6 @@ class Runner:
                         raise StopRun("IMU frame invalid")
                     self.imu_update(s)
                     if self.mode == MODE_GETUP:
-                        if s.flags & p.ST_GETUP:
-                            g_echo = int(s.tick)
-                        self.current_watch(s, len(self.getups))
                         self.reading_watch(s, len(self.getups))
                 if ((int(st.tick) - next_tick) & 0xFFFFFFFF) < 0x80000000:
                     break
@@ -630,20 +583,13 @@ class Runner:
                 ob.reset()
                 ob.push(st)
                 getup.decoder.reset(pos)
-                g_entry = g_echo = g_phase = int(st.tick)
-                self.current_watch_reset()
+                g_entry = g_phase = int(st.tick)
                 if not (start_trigger and k == 0):         # a placed start's reading watch goes on from the run's start
                     self.reading_watch_reset()
                 self.reading_watch(st, ev["n"])
                 hb_run, k_mode = 0, 0
             elif self.mode == MODE_GETUP:
                 ev = self.getups[-1]
-                if ((int(st.tick) - g_echo) & 0xFFFFFFFF) * 0.005 > ECHO_TIMEOUT_S:
-                    msg = "GETUP: no ST_GETUP echo for 0.2 s: this firmware has no get-up mode"
-                    self.warnings.append(msg)
-                    self.out("WARNING: " + msg)
-                    ev.update(end="no echo", end_step=k)
-                    raise Disarm("get-up: no ST_GETUP echo")
                 ok = (tcf < getup.handback_tilt_deg and gn < getup.handback_gyro
                       and math.degrees(float(np.sqrt(np.mean(pos ** 2)))) < getup.handback_rms_deg)
                 hb_run = hb_run + 1 if ok else 0
@@ -652,7 +598,6 @@ class Runner:
                     ev.update(end="hand-back", end_step=k, end_tick=int(st.tick), seconds=t_in)
                     self.out(f"hand-back after {t_in:.2f} s in GETUP {ev['n']}")
                     self.mode = MODE_WALK
-                    self.current_watch_reset()
                     self.reading_watch_reset()
                     self.fall.reset()
                     ob.reset()
@@ -711,7 +656,6 @@ class Runner:
                              ("tilt_deg", tilt_deg(st.acc_mg)), ("late", late), ("mode", int(not walking)),
                              ("tilt_cf_deg", tcf), ("gyro_norm", gn), ("getup_echo", bool(st.flags & p.ST_GETUP)),
                              ("cur_max_a", float(np.max(np.abs(np.asarray(st.cur_ma, dtype=float)))) / 1000.0),
-                             ("current_flagged", any(e is not None for e in self._cw_active)),
                              ("reading_flagged", not walking and bool(self._rw_seen))):
                 self.steps[key].append(val)
 
@@ -882,8 +826,8 @@ def cmd_run(link, a) -> int:
             "getup_rules": {"cf_tau_s": CF_TAU_S, "cf_gate_g": list(CF_GATE_G),
                             "fall": [FALL_TILT_DEG, FALL_HOLD_S, FALL_FAST_TILT_DEG, FALL_FAST_GYRO],
                             "handback": [getup.handback_tilt_deg, getup.handback_gyro, getup.handback_rms_deg, HANDBACK_STEPS],
-                            "restart_tilt_deg": PHASE_RESTART_TILT_DEG, "echo_timeout_s": ECHO_TIMEOUT_S},
-            "current_watch": {"amps": WATCH_AMPS, "seconds": WATCH_S}, "reading_watch": {"deg": READING_WATCH_DEG}}
+                            "restart_tilt_deg": PHASE_RESTART_TILT_DEG},
+            "reading_watch": {"deg": READING_WATCH_DEG}}
     runner.warm_up(ob, heading, walker_act, decoder, getup)
     # A full collection over the log's objects can stall every thread for tens of ms: none while armed.
     gc.collect()
@@ -937,8 +881,6 @@ def cmd_run(link, a) -> int:
         if a.log:
             meta.update(missing_ticks=ob.missing, command_initial=runner.command_initial,
                         reading_flags=runner.reading_flags, getups=runner.getups)
-            runner.current_watch_reset("run end")
-            meta["current_flags"] = runner.current_flags
             runner.save(a.log, meta)
     lat = np.asarray(link.latency, dtype=float) * 1000
     if len(lat):

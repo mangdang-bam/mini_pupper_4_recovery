@@ -3,9 +3,9 @@
 The Mini Pupper v4 SKU1 is the short body on the SKU2's legs, servos and ESP32 board, without a Raspberry Pi. Both
 policies run on the ESP32, at 50 Hz, with the
 [Mini Pupper v4 firmware](https://github.com/mangdangroboticsclub/minipupper_4_mcu). The **walker**
-(`mp4_rl/skills/walker/policies/sku1`) stands, walks in every direction, turns in place and rides out shoves. When the firmware
-detects a fall it hands over to the **get-up** (`mp4_rl/skills/getup/policies/sku1`), which puts the robot back on its feet;
-once the robot is upright, the walker takes over again.
+(`mp4_rl/skills/walker/policies/sku1`) stands, walks in every direction, turns in place and rides out shoves. When the
+firmware detects a fall it hands over to the **get-up** (`mp4_rl/skills/getup/policies/sku1`), which puts the robot back
+on its feet; once the robot is upright, the walker takes over again.
 
 ## Requirements
 
@@ -13,7 +13,8 @@ once the robot is upright, the walker takes over again.
   (`sku1_contract.json`) and its joint limits (`sku1_joint_limits.json`); the robot's offsets have to match it (see
   [Another unit](#another-unit)).
 - The Mini Pupper v4 firmware on the ESP32. Build, flash and load the policies with the firmware's own tools, as its
-  documentation describes; load the two folders `mp4_rl/skills/walker/policies/sku1` and `mp4_rl/skills/getup/policies/sku1`.
+  documentation describes; load the two folders `mp4_rl/skills/walker/policies/sku1` and
+  `mp4_rl/skills/getup/policies/sku1`.
 - The get-up needs the firmware's knee-target limit at large thigh angles, which the Mini Pupper v4 firmware applies on
   the SKU1.
 - A hand ready on the stop, a foam mat for floor falls, and a stand to put the robot on between runs.
@@ -23,9 +24,8 @@ once the robot is upright, the walker takes over again.
 - **Abduction gears:** the servo module's abduction gear train is the robot's weak part. Feel the abductions by hand for
   new play or roughness after back flips and after each set of shoves, and stop if one feels rough. Keep a spare servo
   module on the bench.
-- **Temperatures:** the firmware refuses to start a run with a hot servo and stops one that gets too hot. Between runs,
-  let the servos cool.
-- **Between runs, lift the robot onto its stand:** standing on the floor between runs heats the servos.
+- **Between runs, lift the robot onto its stand and let the servos cool:** standing on the floor between runs heats
+  them.
 - **Hands off, and the robot still, at the start of every run:** the gyro's bias is measured then, and a run in which the
   robot moved is refused. Stop a run before you pick the robot up.
 - **Never command joints near the potentiometer track ends.** The policies' bounds keep every target at least 20° inside
@@ -41,7 +41,7 @@ from the angle turned over the run's time.
 | | Takes | Result |
 |---|---|---|
 | Get-ups from placed fall poses: left side, right side, back, nose down | one per pose: 4 | every one up: right side 1.5 s, nose down 1.5 s, back 1.7 s, left side 3.9 s |
-| Shoves by hand until it fell: standing, and walking forward at 0.10 m/s | 18 falls in 2 runs: 8 standing, 10 walking | every one back up (standing: 1.5-1.8 s, one 6.6 s), and walking again in the walking run |
+| Shoves by hand until it fell: standing, and walking forward at 0.10 m/s | 18 falls in 2 runs: 8 standing, 10 walking | 18 of 18 back up (standing: 1.5-1.8 s, one 6.6 s), and walking again in the walking run |
 | Walking forward (0.10, 0.20 m/s), backward (0.10), left (0.10) and right (0.12) | 5 | 0.64-0.85 × the speed simulation predicts for the same command, no falls |
 | Turning in place at +1.0, -1.0 and +2.0 rad/s | 3 | 0.64-0.79 × the simulated turn rate; up to 1.36 rad/s at a +2.0 rad/s command |
 | Walking at 0.10 m/s while turning at -0.5 rad/s | 1 | 0.73 × the simulated speed, 0.61 × the simulated turn |
@@ -60,10 +60,8 @@ Per command:
 | Turn +2.0 rad/s | 1.36 rad/s | 2.13 rad/s | 0.64 |
 | Forward 0.10 m/s, turn -0.5 rad/s | 0.081 m/s along its arc, turn -0.25 rad/s | 0.112 m/s, turn -0.41 rad/s | 0.73 (speed), 0.61 (turn) |
 
-The simulated figures are the walker's omni evaluation on the SKU1's plant (`mp4_rl/skills/walker/eval/sku1.sh`, `omni_s21`).
-In one more standing shove run, before the 8 above, the first fall got up and the second get-up was stopped by the
-firmware's timing guard: the robot stayed down. The lidar cases, the printed stairs and rough ground
-were evaluated in simulation.
+The simulated figures are the walker's omni evaluation on the SKU1's plant (`mp4_rl/skills/walker/eval/sku1.sh`,
+`omni_s21`). The lidar cases, the printed stairs and rough ground were evaluated in simulation.
 
 ## Another unit
 

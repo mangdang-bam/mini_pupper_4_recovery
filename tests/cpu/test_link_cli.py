@@ -88,24 +88,27 @@ def test_latched_fault_refused_until_clear(fake, capsys):
     assert fake.armed_seen
 
 
-def test_a_refused_arm_for_a_hot_servo_stops_with_its_temperature(fake, capsys):
-    """The firmware refuses an ARM from disarmed with a servo at 45 degC (``ST_HOT``, the hottest servo named): a
-    command that arms stops at the first STATE after its arming frame."""
-    fake.temps_dc[6] = 463
+def test_a_refused_arm_stops_the_command(fake, capsys):
+    """The firmware refuses the ARM by its own rules: a command that arms stops at the first STATE after its arming frame,
+    naming the STATE flags."""
+    fake.refuse_arm = True
     assert cli.main(["--port", fake.port, "calib", "--seconds", "0.5"]) == 1
-    assert "servo 7 at 46.3 degC: the firmware refused to arm" in capsys.readouterr().err
-    assert not fake.armed_seen and fake.latched & p.ST_HOT
-    fake.temps_dc[6] = 400                                   # cooled: the next ARM clears the flag
-    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1"]) == 0
-    assert fake.armed_seen and not fake.latched & p.ST_HOT
+    assert "the firmware is not armed: it refused the ARM or disarmed (STATE flags: imu, rejected)" in capsys.readouterr().err
+    assert not fake.armed_seen
+    fake.refuse_arm = False                                  # the refusal stays latched until cleared
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1", "--clear"]) == 0
+    assert fake.armed_seen
 
 
-def test_a_hot_flag_before_our_arm_does_not_count(fake):
-    """A STATE that answers no frame of ours since our ARM may still carry an earlier refusal: it is ignored."""
-    st = types.SimpleNamespace(seq=5, flags=p.ST_HOT, armed=False, fault_servo=3, temp_dc=[500] * 12)
+def test_a_state_before_our_arm_is_not_judged(fake):
+    """A STATE that answers no frame of ours since our ARM may still show the state before it: it is ignored; one that
+    answers our frames and shows the firmware not armed raises."""
+    st = types.SimpleNamespace(seq=5, flags=p.ST_REJECTED, armed=False, fault_servo=0,
+                               flag_names=lambda: ["rejected"])
     link = types.SimpleNamespace(check=lambda: None, latest=st, last_seq=12)
     cli.check_flags(link, types.SimpleNamespace(first_seq=10))
-    with pytest.raises(cli.LinkError, match="servo 3 at 50.0 degC: the firmware refused to arm"):
+    cli.check_flags(link, types.SimpleNamespace(first_seq=None))      # nothing sent yet
+    with pytest.raises(cli.LinkError, match=r"not armed: it refused the ARM or disarmed \(STATE flags: rejected\)"):
         cli.check_flags(link, types.SimpleNamespace(first_seq=4))
 
 
@@ -210,16 +213,8 @@ def test_stream_sets_get_up_mode_on_every_frame_and_logs_it(fake, tmp_path, caps
     armed = [fr for fr in fake.frames if not fr[1] & p.SA_DISARM]
     assert armed and all(fr[1] & p.SA_GETUP for fr in armed)
     meta = json.loads(str(np.load(log)["meta"]))
-    assert meta["stop_reason"] == "completed" and meta["getup_echo_share"] == 1.0
+    assert meta["stop_reason"] == "completed"
     assert not fake.armed
-
-
-def test_stream_stops_without_the_echo(fake, tmp_path, capsys):
-    fake.echo = False
-    rc, log = stream(fake, tmp_path, np.zeros((400, 12)))
-    assert rc == 0
-    assert json.loads(str(np.load(log)["meta"]))["stop_reason"] == "no_getup_echo"
-    assert "no get-up mode echo" in capsys.readouterr().out
 
 
 def test_stream_plays_a_180_deg_hip_at_20_deg_per_send(fake, tmp_path, capsys):
@@ -265,48 +260,6 @@ def test_stream_stops_and_returns_at_a_track_end_reading(fake, tmp_path, capsys)
     meta = json.loads(str(np.load(log)["meta"]))
     assert rc == 0 and meta["stop_reason"] == "track_end" and meta["track_end_servo"][0] == 2
     assert "within 15 deg of a track end" in capsys.readouterr().out
-
-
-def test_stream_refuses_a_hot_start(fake, tmp_path, capsys):
-    fake.temps_dc = [460] * 12
-    rc, _ = stream(fake, tmp_path, np.zeros((5, 12)))
-    assert rc == 1 and "let it cool" in capsys.readouterr().err and not fake.armed_seen
-
-
-def test_stream_a_hot_housing_stops_and_returns(fake, tmp_path):
-    fake.trip_temp_dc = 10**6                                # the host's own watch, before the firmware's trip
-    orig = fake.before_tick
-
-    def tick():
-        orig()
-        if len(fake.armed_seen) > 500:
-            fake.temps_dc = [560] * 12
-    fake.before_tick = tick
-    rc, log = stream(fake, tmp_path, np.zeros((300, 12)))
-    assert rc == 0 and json.loads(str(np.load(log)["meta"]))["stop_reason"] == "temperature"
-    assert not fake.armed
-
-
-def frame(tick, dc):
-    return types.SimpleNamespace(tick=tick, temp_dc=[dc] * 12)
-
-
-def test_temp_watch_ignores_a_one_frame_spike():
-    w = cli.TempWatch(55.0)
-    seq = [336, 672, 336] + [336] * 400
-    assert all(w.update(frame(t, dc)) is None for t, dc in enumerate(seq))
-
-
-def test_temp_watch_needs_a_second_above_the_limit():
-    w = cli.TempWatch(55.0)
-    got = [w.update(frame(t, 560)) for t in range(201)]
-    assert got[199] is None and got[200] == 56.0
-    w = cli.TempWatch(55.0)
-    for t in range(150):
-        assert w.update(frame(t, 560)) is None
-    assert w.update(frame(150, 500)) is None    # a dip starts the second again
-    for t in range(151, 351):
-        assert w.update(frame(t, 560)) is None
 
 
 def test_missing_port_is_a_one_line_error(capsys):
