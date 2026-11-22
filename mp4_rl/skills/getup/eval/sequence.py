@@ -116,6 +116,7 @@ import torch  # noqa: E402
 
 from mp4_rl.common.heading import pi_step  # noqa: E402
 from mp4_rl.common.policy import (  # noqa: E402
+    Contract,
     has_heading_obs,
     obs_terms,
     policy_band_deg,
@@ -1005,6 +1006,28 @@ def load_policy(path: str):
     return TorchPolicy(Path(path) / "policy.npz", "cuda:0")
 
 
+def eval_robot(a, metas) -> str:
+    """The robot the evaluation runs on: ``--robot``, else the walker's (its meta's ``robot``; none: SKU2)."""
+    from mp4_sim import robots
+    return robots.get(getattr(a, "robot", None) or metas[0].get("robot")).name
+
+
+def calibration_refusal(a, dirs, metas) -> str | None:
+    """Why the pair must not run on the evaluated robot, or None: a walker and a get-up exported for different robots,
+    or a policy whose band or bounds are not for that robot's calibration (``runner.band_refusal`` against the robot's
+    own calibration, as the runner checks a policy against the calibration in its folder)."""
+    from mp4_sim import robots
+    have = [robots.get(m.get("robot")).name for m in metas]
+    if len(set(have)) > 1:
+        return f"the walker and the get-up were exported for different robots ({' / '.join(have)})"
+    contract = Contract.load(robot=eval_robot(a, metas))
+    for d, m in zip(dirs, metas):
+        why = rn.band_refusal(m, contract)
+        if why:
+            return f"{d}: {why}"
+    return None
+
+
 def main(argv=None, step_hook=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--walker", required=True, help="a walking policy directory (policy.npz [+ config.json])")
@@ -1066,10 +1089,10 @@ def main(argv=None, step_hook=None) -> int:
     if kinds[0] != "walk" or any(k_ != "getup" for k_ in kinds[1:]):
         print(f"refused: kinds {' / '.join(map(repr, kinds))}, need 'walk' / 'getup'")
         return 2
-    for why in (rn.band_refusal(m) for m in metas):
-        if why:
-            print(f"refused: {why}")
-            return 2
+    why = calibration_refusal(a, dirs, metas)
+    if why:
+        print(f"refused: {why}")
+        return 2
     free = gpu_free_mb()
     if free is not None and free < a.min_free_mb:
         print(f"refused: {free} MB free on the GPU (< {a.min_free_mb})", flush=True)
@@ -1082,7 +1105,7 @@ def main(argv=None, step_hook=None) -> int:
     gdir = Path(a.getup)
     t0 = time.time()
     env, kw, plant = build(a, wpol, gdir)
-    reach = reach_gate.ReachMeter(reach_gate.load_proven(a.reach)) if a.reach else None
+    reach = reach_gate.ReachMeter(reach_gate.load_proven(a.reach), robot=eval_robot(a, metas)) if a.reach else None
     hook = step_hook
     if reach is not None:
         from mp4_rl.common.mdp import servo_action

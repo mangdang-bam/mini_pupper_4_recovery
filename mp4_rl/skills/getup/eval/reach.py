@@ -65,10 +65,11 @@ def load_proven(path=None) -> dict:
 class ReachMeter:
     """Collects commanded and measured poses (``add``) and reports them per leg against the proven reach (``report``)."""
 
-    def __init__(self, proven: dict | None = None):
+    def __init__(self, proven: dict | None = None, robot=None):
+        """``robot``: the evaluated robot (None: SKU2), whose calibration and joint limits map the poses."""
         self.proven = load_proven() if proven is None else proven
-        self.c = Contract.load()
-        self.legs = limits.legs()
+        self.c = Contract.load(robot=robot)
+        self.legs = limits.legs(robot=robot)
         self.samples = {"commanded": [], "measured": []}
 
     def add(self, commanded_rel, measured_rel) -> None:

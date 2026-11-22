@@ -546,7 +546,7 @@ def main() -> int:
     meter = MotionMeter(env) if a.motion else None
     if meter is not None:
         out["motion"] = meter.config()
-    reach = reach_gate.ReachMeter(reach_gate.load_proven(a.reach)) if a.reach else None
+    reach = reach_gate.ReachMeter(reach_gate.load_proven(a.reach), robot=opt.robot) if a.reach else None
     for s in starts:
         r = run_start(env, pol, s, a.seconds, a.seed, noise=a.action_noise, meter=meter, reach=reach)
         out["starts"][s] = r
