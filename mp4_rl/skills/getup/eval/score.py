@@ -17,6 +17,12 @@ STARTS = ("left", "right", "back", "nose", "midfall", "random")
 GETUP_TERRAIN = ("low_poly", "raised_relief", "slope_up", "slope_down", "boxes")
 
 
+def seq_robots(d: dict):
+    """The sequence's robot count: its JSON keeps the per-robot results under ``robots``."""
+    n = d.get("robots")
+    return len(n["kicks"]) if isinstance(n, dict) and "kicks" in n else n
+
+
 class Results:
     def __init__(self, folder):
         self.folder = Path(folder)
@@ -59,7 +65,7 @@ def getup_tables(r):
     runs = r.seeds("seq", (21, 22, 23, 24))
     if runs:
         d0 = runs[0][1]
-        out += [f"The sequence ({d0.get('robots')} robots, {d0.get('seconds'):g} s, with the walker; seeds "
+        out += [f"The sequence ({seq_robots(d0)} robots, {d0.get('seconds'):g} s, with the walker; seeds "
                 f"{', '.join(str(s) for s, _ in runs)}):", "",
                 "| | " + " | ".join(f"seed {s}" for s, _ in runs) + " |", "|---|" + "---|" * len(runs)]
         S = [d["summary"] for _, d in runs]

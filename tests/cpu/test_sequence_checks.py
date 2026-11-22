@@ -31,3 +31,11 @@ def test_a_policy_for_another_calibration_is_refused():
     dirs = [skills.policy_folder("walker", "sku2"), skills.policy_folder("getup", "sku2")]
     why = sq.calibration_refusal(types.SimpleNamespace(robot="sku1"), dirs, metas(*dirs))
     assert why and why.startswith(f"{dirs[0]}: ") and "calibration" in why
+
+
+def test_the_score_reads_the_sequence_robot_count():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("score", skills.folder("getup") / "eval" / "score.py")
+    score = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(score)
+    assert score.seq_robots({"robots": {"kicks": [3, 1, 2]}}) == 3 and score.seq_robots({"robots": 256}) == 256
