@@ -65,9 +65,3 @@ scripts/install/   the installer and its checks
 tests/             cpu/ needs no GPU, gpu/ 5-15 min
 docs/              INSTALL, POLICY_CONTRACT, ADDING_A_POLICY
 ```
-
-Former name: mini_pupper_4_recovery (Python package `mp4_recovery`).
-
-## Licence
-
-Apache-2.0: see [LICENSE](LICENSE), [NOTICE](NOTICE) and [PROVENANCE.md](PROVENANCE.md).
