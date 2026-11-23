@@ -1,34 +1,32 @@
 """Get-up motions as files ``mp4link stream`` plays on a lifted robot: ``delta_dd`` (N x 12: each SET_ALL frame's
 targets minus the contract's stand, in the firmware's deci-degrees, servo order) at ``period_s`` 0.02 s.
 
-    python tools/getup_stream.py --policy policies/getup --out-dir runs/streams
+    .venv/bin/python tools/getup_stream.py --policy mp4_rl/skills/getup/policies/sku2 --out-dir runs/streams
 
-Two sources:
+A learned get-up policy (``--policy DIR``, an export with ``config.json``) plays in one simulated robot in
+``getup_eval``'s env (the policy's band, scale, limits, target filter alpha and plant), from a named start
+(``getup_eval.STARTS``: back, left, right, nose, ...), ``--seed``; the applied targets the decoder made at every policy
+step (the simulation's ``ServoAction``: band, 20 deg step limit, bounds, filter, the firmware's tick quantisation),
+recorded from the start to ``--tail-s`` after the get-up's success (all ``--seconds`` if it never succeeds). The robot
+side's own decoder (``policy.ActionDecoder``) is run on the same raw actions as a check
+(``runner_decoder_max_dd_diff``). Each start is written at every ``--speeds`` factor (default 0.25 and 1.0): the
+recorded targets resampled in time (linear in dd, 0.02 s frames, 1 / speed as many), so 0.25 moves a quarter as far per
+frame. The plant flags (``--legs``, ``--foot``, ``--foot-radius``, ``--actuator`` and its supply options,
+``--masses-json``) override the policy's (its meta's, else its run's); the summary records them and, per start, the
+built env (``eval.built_env``: total mass, legs, servo, contract and limits hashes). A policy made for another
+calibration than the contract's is refused, as the runner refuses it. Every frame is checked against the contract's
+potentiometer dead zone (its stand dd plus the row at least ``--end-margin-deg``, default 20 as ``mp4link stream``'s,
+from 0 and 3100 dd: refused, nothing written, otherwise).
 
-1. A learned get-up policy (``--policy DIR``, an export with ``config.json``): one simulated robot in ``getup_eval``'s env
-   (the policy's band, scale, limits, target filter alpha and plant), from a named start (``getup_eval.STARTS``: back,
-   left, right, nose, ...), ``--seed``; the applied targets the decoder made at every policy step (the simulation's
-   ``ServoAction``: band, 20 deg step limit, bounds, filter, the firmware's tick quantisation), recorded from the start
-   to ``--tail-s`` after the get-up's success (all ``--seconds`` if it never succeeds). The robot side's own decoder
-   (``contract.ActionDecoder``) is run on the same raw actions as a check (``runner_decoder_max_dd_diff``). Each start is
-   written at every ``--speeds`` factor (default 0.25 and 1.0): the recorded targets resampled in time (linear in dd,
-   0.02 s frames, 1 / speed as many), so 0.25 moves a quarter as far per frame. A policy made for another calibration than
-   the contract's is refused, as the runner refuses it. Every frame is checked against the
-   contract's potentiometer dead zone (its stand dd plus the row at least ``--end-margin-deg``, default 20 as ``mp4link
-   stream``'s, from 0 and 3100 dd: refused, nothing written, otherwise).
+(``--device cpu``, the default: one robot, about a minute per start; ``--device cuda:0`` with 3 GB free.) Files:
+``<policy>_<start>_s<seed>_x<speed>.npz`` (``0p25``, ``1p00``) and ``<policy>_s<seed>.json`` (per file: frames,
+seconds, success and its time, max deviation from the stand per joint, the margin to the track ends, the frames
+``mp4link stream`` would change: beyond its band or more than its 20 deg per send).
 
-   (``--device cpu``, the default: one robot, about a minute per start; ``--device cuda:0`` with 3 GB free.) Files:
-   ``<policy>_<start>_s<seed>_x<speed>.npz`` (``0p25``, ``1p00``) and ``<policy>_s<seed>.json`` (per file: frames,
-   seconds, success and its time, max deviation from the stand per joint, the margin to the track ends, the frames
-   ``mp4link stream`` would change: beyond its band or more than its 20 deg per send).
-
-2. A searched open-loop get-up (``gpu/getup_search.py`` JSON; positional ``SEARCH OUT``): the targets the robot's decoder
-   makes from the stand, the stand held 1.5 s after (``--mirror``, ``--speed`` < 1 stretches the holds and lowers the step
-   limit alike).
-
-On the robot (lifted, legs free): ``mp4link stream FILE --cap CAP --stop-c 55``, always in the firmware's get-up mode and with
-the policy decoder's band and step (abduction 90 deg, hip and knee 180 deg, 20 deg per send). See docs/ROBOT.md. The JSON counts frames it would change (``frames_beyond_stream_band``, ``frames_over_stream_step``): 0, or a frame or
-two by tick rounding (0.3 deg).
+On the robot (lifted, legs free): ``mp4link stream FILE --cap CAP``, always in the firmware's get-up mode
+and with the policy decoder's band and step (abduction 90 deg, hip and knee 180 deg, 20 deg per send). See
+mp4_rl/skills/getup/docs/ROBOT_SKU2.md. The JSON counts frames it would change (``frames_beyond_stream_band``, ``frames_over_stream_step``): 0,
+or a frame or two by tick rounding (0.3 deg).
 """
 from __future__ import annotations
 
@@ -39,12 +37,18 @@ from pathlib import Path
 
 import numpy as np
 
-from mp4_recovery.contract import (DD0, TRACK_DD, ActionDecoder, Contract, calibration_refusal,
-                                   policy_band_deg, policy_bounds, policy_stand_offset_deg)
+from mp4_rl.common.policy import (
+    DD0,
+    TRACK_DD,
+    ActionDecoder,
+    Contract,
+    calibration_refusal,
+    policy_band_deg,
+    policy_bounds,
+    policy_stand_offset_deg,
+)
 
 PERIOD = 0.02
-HOLD_HI, HOLD_LO, MAX_SEQ = 1.5, 0.3, 4.5
-WALK_BAND = np.array([20.0 if i % 3 == 0 else 60.0 for i in range(12)])
 # mp4link stream: the band per servo (abduction 90 deg, hip and knee 180) and the step per send, as the decoder's
 STREAM_BAND_MAX_DEG = np.array([90.0 if i % 3 == 0 else 180.0 for i in range(12)])
 STREAM_STEP_DEG = 20.0
@@ -52,7 +56,7 @@ END_MARGIN_DEG = 20.0               # as mp4link stream (stream --end-margin-deg
 POLICY_STARTS = ("back", "left", "right", "nose")
 
 
-# ---- checks shared by both sources ----------------------------------------------------------------------------------
+# ---- checks -------------------------------------------------------------------------------------------------------
 def end_margin_deg(stand_dd, delta) -> np.ndarray:
     """Per servo the smallest distance (deg) of any frame's target (the stand plus the row) and the stand from the
     pot's track ends (0 and 3100 dd)."""
@@ -104,19 +108,39 @@ def dd_of_quantised_rel(c: Contract, rel) -> np.ndarray:
     return np.rint(DD0 - 10.0 * (c.servo_deg_from_rel(rel) + c.offsets_deg))
 
 
-def record_policy(pdir: Path, start: str, seed: int, seconds: float, device: str) -> dict:
+def plant_kwargs(a) -> dict:
+    """``getup_eval.build``'s plant arguments from the flags (``--legs``, ``--foot``, ``--foot-radius``, ``--actuator``
+    and its supply options, ``--masses-json``); none given: the policy's meta's, else its run's."""
+    from mp4_sim.actuators.choice import options_from_args
+
+    from mp4_rl.common.bounds import legs_flags
+    return {"actuator": options_from_args(a), "legs": legs_flags(a), "masses_json": getattr(a, "masses_json", None)}
+
+
+def plant_flags_record(a) -> dict:
+    """The plant flags as given (None: the policy's)."""
+    return {"legs": a.legs, "foot": a.foot, "foot_radius_m": a.foot_radius, "actuator": a.actuator,
+            "supply_v": a.supply_v, "supply_drop_ohm": a.supply_drop_ohm, "r_scale": a.r_scale,
+            "masses_json": a.masses_json}
+
+
+def record_policy(pdir: Path, start: str, seed: int, seconds: float, device: str, plant: dict | None = None) -> dict:
     """One simulated get-up: per step the applied target's dd (the simulation's decoder) and the runner decoder's dd
-    on the same raw actions, the success time, the simulated currents."""
+    on the same raw actions, the success time, the simulated currents. ``plant``: ``plant_kwargs``."""
     import torch
-    from mp4_recovery.eval import getup_eval as ge
-    from mp4_recovery.eval.terrain_eval import TorchPolicy, bam_currents
-    from mp4_recovery.gpu.getup_task import SUCCESS_HOLD_S
-    from mp4_recovery.gpu.mdp import servo_action
+
+    from mp4_rl.common import built_env
+    from mp4_rl.common.mdp import servo_action
+    from mp4_rl.skills.getup.eval import getup_eval as ge
+    from mp4_rl.skills.getup.task import SUCCESS_HOLD_S
+    from mp4_rl.skills.walker.eval.terrain import TorchPolicy, bam_currents
 
     c = Contract.load()
     pol = TorchPolicy(pdir / "policy.npz", device)
     meta = pol.meta
-    env, opt = ge.build(pdir, 1, seed, device=device)
+    env, opt = ge.build(pdir, 1, seed, device=device, **(plant or {}))
+    built = built_env.record(env, opt)
+    print(built_env.line(built), flush=True)
     term = servo_action(env)
     ge.set_start(env, start)
     torch.manual_seed(seed)
@@ -146,7 +170,8 @@ def record_policy(pdir: Path, start: str, seed: int, seconds: float, device: str
     env.close()
     return {"dd0": np.asarray(dd0, float), "dd": np.asarray(dd_sim, float), "dd_runner": np.asarray(dd_run, float),
             "t_success": t_succ, "current_A": np.asarray(cur), "filter_alpha": float(opt.filter_alpha),
-            "limits": bool(opt.limits), "band_deg": list(opt.band_deg), "action_scale": list(opt.action_scale)}
+            "limits": bool(opt.limits), "band_deg": list(opt.band_deg), "action_scale": list(opt.action_scale),
+            "built_env": built}
 
 
 def main_policy(a) -> int:
@@ -166,10 +191,11 @@ def main_policy(a) -> int:
     summary = {"policy": str(pdir.resolve()), "policy_sha256": _sha(pdir / "policy.npz"), "seed": a.seed,
                "seconds": a.seconds, "tail_s": a.tail_s, "device": a.device,
                "contract_stand_dd": stand.astype(int).tolist(), "end_margin_deg": a.end_margin_deg,
-               "period_s": PERIOD, "files": {}}
+               "period_s": PERIOD, "plant_flags": plant_flags_record(a), "built_env": {}, "files": {}}
     pending = []
     for start in [s for s in a.starts.split(",") if s]:
-        r = record_policy(pdir, start, a.seed, a.seconds, a.device)
+        r = record_policy(pdir, start, a.seed, a.seconds, a.device, plant_kwargs(a))
+        summary["built_env"][start] = r["built_env"]
         n = len(r["dd"]) if r["t_success"] is None else min(len(r["dd"]),
                                                             int(round((r["t_success"] + a.tail_s) / PERIOD)))
         dd = r["dd"][:n]
@@ -180,7 +206,10 @@ def main_policy(a) -> int:
                "runner_decoder_frames_differing": int((diff > 0).any(-1).sum()),
                "start_pose_dd": r["dd0"].astype(int).tolist(),
                "sim_floor_current_p99_A": np.percentile(r["current_A"][:n], 99, axis=0).round(3).tolist(),
-               "sim_floor_current_note": "BAM |tau|/kt of the simulated floor get-up, not of a lifted playback"}
+               "sim_floor_current_note": "BAM |tau|/kt of the simulated floor get-up, not of a lifted playback",
+               "plant_flags": plant_flags_record(a),
+               "built_env": {k: r["built_env"][k] for k in ("sum_body_mass_kg", "masses", "legs", "actuator",
+                                                             "attachment", "contract", "limits_file")}}
         print(json.dumps({k: rec[k] for k in ("start", "success", "t_success_s", "recorded_s",
                                                "runner_decoder_max_dd_diff")}), flush=True)
         for sp in speeds:
@@ -212,80 +241,30 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-# ---- 2. a searched open-loop get-up ------------------------------------------------------------------------------
-def main_search(a) -> int:
-    from mp4_recovery.gpu.getup_task import getup_scale
-    from mp4_recovery.gpu.getup_task import mirror_joints
-    s = json.loads(Path(a.search).read_text())
-    seq = s[a.which]
-    post = np.clip(np.asarray(seq["postures"], dtype=float), -1, 1)
-    hold = np.clip(np.asarray(seq["holds_s"], dtype=float), HOLD_LO, HOLD_HI)
-    if hold.sum() > MAX_SEQ:
-        hold = hold * MAX_SEQ / hold.sum()
-    if a.mirror:
-        perm, sign = mirror_joints()
-        post = post[:, perm] * np.asarray(sign)[None]
-    hold = hold / a.speed
-    c = Contract.load()
-    band = np.asarray(s["band_deg"] * 4 if len(s["band_deg"]) == 3 else s["band_deg"], dtype=float)
-    bounds = None
-    if s.get("limits"):                      # a search inside the measured limits: the robot gets the same clamps
-        from mp4_recovery import limits as L
-        bounds = L.decoder_bounds("getup", c)
-    alpha = float(s.get("filter_alpha", 0.0) or 0.0)    # a search made through the target filter: the same filter
-    dec = ActionDecoder(c, getup_scale(band), band_deg=band, bounds=bounds, filter_alpha=alpha)
-    dec.reset(np.zeros(12))
-    dec.limit = dec.limit * a.speed
-    stand_dd = np.asarray(c.stand_dd, dtype=float)
-    rows, ends = [], np.cumsum(hold)
-    for st in range(int(round((ends[-1] + 1.5) / PERIOD))):
-        t = st * PERIOD
-        i = int((ends <= t).sum())
-        act = post[i] if i < len(post) else np.zeros(12)
-        rows.append(np.asarray(dec(act)["dd"], dtype=float) - stand_dd)
-    delta = np.asarray(rows)
-    why = dead_zone_refusal(stand_dd, delta, a.end_margin_deg)
-    if why:
-        raise SystemExit(f"refused: {why}; nothing written")
-    dev_deg = np.abs(delta) / 10.0
-    clipped = int((dev_deg > WALK_BAND[None] + 0.05).any(-1).sum())
-    np.savez(a.out, delta_dd=delta, period_s=PERIOD,
-             meta=json.dumps({"search": str(a.search), "which": a.which, "mirror": a.mirror, "speed": a.speed,
-                              "band_deg": band.tolist(), "limits": bounds is not None, "filter_alpha": alpha,
-                              "frames": len(delta), "max_dev_deg": dev_deg.max(0).tolist(),
-                              "clipped_by_stream_band": clipped, "stand_dd_contract": stand_dd.tolist(),
-                              **stream_effects(delta)}))
-    print(json.dumps({"frames": len(delta), "seconds": len(delta) * PERIOD, "max_dev_deg": dev_deg.max(0).round(1)
-                      .tolist(), "frames_clipped_by_stream_band": clipped}))
-    return 0
-
-
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("search", nargs="?", help="a getup_search.py JSON (source 2)")
-    ap.add_argument("out", nargs="?", help="the stream file to write (source 2)")
-    ap.add_argument("--which", default="best", choices=("best", "mean"))
-    ap.add_argument("--mirror", action="store_true", help="left <-> right (source 2)")
-    ap.add_argument("--speed", type=float, default=1.0, help="source 2's slow play")
-    ap.add_argument("--policy", help="a learned get-up's export directory (policy.npz + config.json; source 1)")
-    ap.add_argument("--starts", default=",".join(POLICY_STARTS), help="getup_eval starts (source 1)")
+    ap.add_argument("--policy", required=True, help="a learned get-up's export directory (policy.npz + config.json)")
+    ap.add_argument("--starts", default=",".join(POLICY_STARTS), help="getup_eval starts")
     ap.add_argument("--seed", type=int, default=14, help="the env's seed")
-    ap.add_argument("--seconds", type=float, default=8.0, help="s simulated per start (source 1)")
-    ap.add_argument("--tail-s", type=float, default=1.0, help="s kept after the get-up's success (source 1)")
-    ap.add_argument("--speeds", default="0.25,1.0", help="speed factors written per start (source 1)")
+    ap.add_argument("--seconds", type=float, default=8.0, help="s simulated per start")
+    ap.add_argument("--tail-s", type=float, default=1.0, help="s kept after the get-up's success")
+    ap.add_argument("--speeds", default="0.25,1.0", help="speed factors written per start")
     ap.add_argument("--out-dir", default="runs/streams")
     ap.add_argument("--name", help="the files' prefix (default: the policy directory's name)")
     ap.add_argument("--device", default="cpu", help="the env's device (one robot)")
     ap.add_argument("--end-margin-deg", type=float, default=END_MARGIN_DEG,
                     help="refuse a target this close to a track end (default %(default)s, as mp4link stream's)")
-    a = ap.parse_args(argv)
-    if a.policy:
-        if a.search or a.out:
-            ap.error("--policy takes no positional arguments")
-        return main_policy(a)
-    if not (a.search and a.out):
-        ap.error("SEARCH OUT, or --policy DIR")
-    return main_search(a)
+    # the plant: each default is the policy's meta's, else its run's options, as getup_eval's
+    from mp4_sim.actuators.choice import add_args as add_servo_args
+
+    from mp4_rl.common.bounds import add_legs_args
+    from mp4_rl.common.built_env import masses_arg
+    add_legs_args(ap, "the policy's meta, else its run's options, else sku_2")
+    add_servo_args(ap, evaluation=True)
+    ap.add_argument("--masses-json", type=masses_arg, metavar="PATH",
+                    help="the plant's masses file (a path, or a file name in the robot's measured data in mp4_sim; default the "
+                         "policy's run's)")
+    return main_policy(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

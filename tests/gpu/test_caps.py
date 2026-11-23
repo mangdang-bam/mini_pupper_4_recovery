@@ -7,8 +7,13 @@ from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from tensordict import TensorDict
 
-from mp4_recovery.gpu import algorithms
-from mp4_recovery.gpu.algorithms import (SmoothPPO, caps_pair_indices, caps_spatial_loss, caps_temporal_loss)
+from mp4_rl.common import algorithms
+from mp4_rl.common.algorithms import (
+    SmoothPPO,
+    caps_pair_indices,
+    caps_spatial_loss,
+    caps_temporal_loss,
+)
 
 N_ENVS, T, N_OBS, N_CRIT, N_ACT = 16, 8, 45, 50, 12
 GROUPS = {"actor": ["actor"], "critic": ["critic"]}

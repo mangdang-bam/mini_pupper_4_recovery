@@ -1,5 +1,5 @@
-# GPU (CUDA) mode: training, evaluation and everything in cpu.txt.
-# Versions come from constraints.txt.
+# GPU (CUDA) mode: training, evaluation and everything in cpu.txt. mp4-sim is installed by scripts/install/ from its
+# pinned release. Versions come from constraints.txt.
 
 mjlab
 mujoco

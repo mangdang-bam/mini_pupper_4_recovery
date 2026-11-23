@@ -2,8 +2,8 @@
 import numpy as np
 import torch
 
-from mp4_recovery.contract import Contract, VelocityFilter
-from mp4_recovery.gpu.mdp import TorchContract, velocity_from_hist
+from mp4_rl.common.mdp import TorchContract, velocity_from_hist
+from mp4_rl.common.policy import Contract, VelocityFilter
 
 C = Contract.load()
 

@@ -1,15 +1,16 @@
 """An actor with an observation normaliser exports as the plain numpy policy and equals rsl_rl's actor."""
 import numpy as np
 
-from mp4_recovery.policy_file import NumpyPolicy, export
+from mp4_rl.common.policy_file import NumpyPolicy, export
 
 
 def _rsl_actor(hidden, mean, std):
     """rsl_rl's own actor model (MLPModel, obs_normalization=True) with these normaliser statistics."""
     import torch
-    from tensordict import TensorDict
     from rsl_rl.models.mlp_model import MLPModel
-    from mp4_recovery import obs_norm
+    from tensordict import TensorDict
+
+    from mp4_rl.common import obs_norm
     obs = TensorDict({"actor": torch.zeros(2, 45)}, batch_size=[2])
     m = MLPModel(obs, {"actor": ["actor"]}, "actor", 12, hidden_dims=hidden, activation="elu", obs_normalization=True,
                  distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.1, "std_type": "scalar"})
@@ -25,7 +26,8 @@ def test_folded_normaliser_export_equals_the_torch_actor(tmp_path):
     normaliser folded into the first layer) that equals rsl_rl's actor with its normaliser to 1e-5."""
     import torch
     from tensordict import TensorDict
-    from mp4_recovery import obs_norm
+
+    from mp4_rl.common import obs_norm
     g = torch.Generator().manual_seed(3)
     mean = torch.randn(45, generator=g) * 0.5
     std = 0.05 + 2.0 * torch.rand(45, generator=g)
@@ -53,7 +55,8 @@ def test_folded_normaliser_export_equals_the_torch_actor(tmp_path):
 def test_load_actor_any_size_with_normaliser(tmp_path):
     import torch
     from tensordict import TensorDict
-    from mp4_recovery.gpu.actor import load_actor
+
+    from mp4_rl.common.actor import load_actor
     mean, std = torch.linspace(-1, 1, 45), torch.linspace(0.1, 2.0, 45)
     m, sd = _rsl_actor((64, 32), mean, std)
     torch.save({"actor_state_dict": sd}, tmp_path / "m.pt")

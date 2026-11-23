@@ -2,7 +2,8 @@
 
 ``FakeEsp32`` keeps the firmware's rules: STATE at 200 Hz, arming, the 100 ms watchdog, the per-servo current guard (walking
 limits, and get-up limits while the latest SET_ALL carries SA_GETUP, echoed as ST_GETUP; a get-up limit of 0 mA turns the guard
-off in that mode), offsets, parameters. Joints follow their targets with a first-order lag.
+off in that mode), offsets, parameters. ``refuse_arm`` makes it refuse every ARM, as a firmware does by its own rules. Joints
+follow their targets with a first-order lag.
 
 ``FakeRobot`` adds the Mini Pupper v4's calibration (from the contract) and IMU mounting (data/imu_mount.json), and an IMU played
 from a script: ``script(t)`` -> (body-frame acc mg, body-frame gyro rad/s), t in s from the moment ``script_at`` armed ticks
@@ -20,7 +21,7 @@ import tty
 
 import numpy as np
 
-from mp4_recovery.deploy.mp4link import protocol as p
+from mp4_rl.deploy.mp4link import protocol as p
 
 
 class FakeEsp32:
@@ -44,12 +45,14 @@ class FakeEsp32:
         self.current_fn = None                          # (i, pos_dd, target_dd) -> mA
         self.walls: dict[int, tuple[float, float]] = {}
         self.temps_dc = [315] * 12
+        self.refuse_arm = False                         # True: every ARM refused (ST_REJECTED)
         self.acc = [0, 0, 1000]
         self.gyr = [0, 0, 0]
         self.imu_ok = True
         self.echo = True                                # False: a firmware without the get-up mode
         self.last_set_all = 0.0
-        self.params = {i: {pid: 0.0 for pid in range(len(p.PARAMS))} for i in range(1, 13)}
+        self.params = {i: {pid: 0.0 for pid in range(len(p.ALL_PARAMS))} for i in range(1, 13)}
+        self.extra_flags = 0                            # more STATE flags (ST_RANGE: the firmware's range check)
         self.nvs: dict[int, float] = {}                 # stored offsets
         self.offsets: dict[int, float] = {}             # RAM table
         self.armed_seen: list[tuple[int, list[float]]] = []   # (enable, targets) per armed tick
@@ -95,6 +98,8 @@ class FakeEsp32:
         if not ok_servo:
             return self._respond(cmd, servo, 1)
         value = struct.unpack("<f", struct.pack("<I", a1 | a2 << 16))[0]
+        if cmd in (p.CMD_GET_PARAM, p.CMD_SET_PARAM) and (a1 if cmd == p.CMD_GET_PARAM else pad) not in self.params[servo]:
+            return self._respond(cmd, servo, 2)
         if cmd == p.CMD_GET_PARAM:
             return self._respond(cmd, servo, 0, self.params[servo][a1])
         if cmd == p.CMD_SET_PARAM:
@@ -105,7 +110,7 @@ class FakeEsp32:
                 return self._respond(cmd, servo, p.STATUS_UNSET, 0.0)
             return self._respond(cmd, servo, 0, self.offsets[servo])
         if cmd == p.CMD_SET_OFFSET:
-            if not -90.0 <= value <= 90.0:
+            if not -120.0 <= value <= 120.0:
                 return self._respond(cmd, servo, 2)
             self.offsets[servo] = value
             return self._respond(cmd, servo, 0, value)
@@ -126,11 +131,12 @@ class FakeEsp32:
         if flags & p.SA_DISARM:
             self.armed = False
         elif flags & p.SA_ARM:
-            if self.latched & p.ST_FAULTS:
+            if self.latched & p.ST_FAULTS or self.refuse_arm:
                 self.latched |= p.ST_REJECTED
-            else:
+            elif not self.armed:
                 self.armed = True
                 self.latched &= ~(p.ST_WATCHDOG | p.ST_REJECTED)
+                self.fault_servo = 0
 
     def currents(self) -> list[int]:
         if self.current_fn is None:
@@ -142,7 +148,7 @@ class FakeEsp32:
 
     def _state(self) -> bytes:
         self.before_tick()
-        flags = (self.latched | (p.ST_ARMED if self.armed else 0) | (p.ST_IMU_OK if self.imu_ok else 0)
+        flags = (self.latched | self.extra_flags | (p.ST_ARMED if self.armed else 0) | (p.ST_IMU_OK if self.imu_ok else 0)
                  | (p.ST_GETUP if self.getup and self.echo else 0))
         body = p.STATE.pack(p.MAGIC_STATE, 1, self.seq, self.tick, int(time.monotonic() * 1e6) & 0xFFFFFFFF,
                             flags, self.fault_servo, 0x0F,

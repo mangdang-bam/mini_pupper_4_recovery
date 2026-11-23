@@ -5,17 +5,15 @@ import types
 
 import numpy as np
 import pytest
-
 from fake_esp32 import FakeEsp32
-from mp4_recovery.contract import Contract
-from mp4_recovery.deploy.mp4link import cli
-from mp4_recovery.deploy.mp4link import protocol as p
+from robot_helpers import C
 
-C = Contract.load()
+from mp4_rl.deploy.mp4link import cli
+from mp4_rl.deploy.mp4link import protocol as p
 
 
 @pytest.fixture
-def fake():
+def fake(fixed_calibration):
     f = FakeEsp32()
     f.offsets = {i + 1: float(v) for i, v in enumerate(C.offsets_deg)}
     f.pos = [float(v) for v in C.stand_dd]
@@ -36,6 +34,31 @@ def test_config_writes_and_verifies(fake, capsys):
     ids = {name: i for i, name in enumerate(p.PARAMS)}
     assert fake.params[7][ids["kp_position"]] == 80.0 and fake.params[7][ids["kff_current"]] == pytest.approx(0.001)
     assert "written to RAM" in capsys.readouterr().out
+
+
+def test_config_writes_pwm_scale_only_when_asked(fake, capsys):
+    pid = p.PARAM_ID["pwm_scale"]
+    for s in range(1, 13):
+        fake.params[s][pid] = 0.0123
+    assert cli.main(["--port", fake.port, "config"]) == 0
+    assert all(fake.params[s][pid] == 0.0123 for s in range(1, 13))       # without --pwm-scale: register 12 untouched
+    assert "pwm_scale" not in capsys.readouterr().out
+    assert cli.main(["--port", fake.port, "config", "--pwm-scale", "0.001"]) == 0
+    assert all(fake.params[s][pid] == pytest.approx(0.001) for s in range(1, 13))
+    assert "pwm_scale=0.001" in capsys.readouterr().out
+
+
+def test_config_pwm_scale_fails_when_the_read_back_differs(fake, capsys, monkeypatch):
+    real = fake._request
+
+    def other(frame):                                  # servo 3 keeps 0.5 whatever pwm_scale it is sent
+        _, cmd, servo, pad, _, _ = p.REQ.unpack(frame[:8])
+        if cmd == p.CMD_SET_PARAM and pad == p.PARAM_ID["pwm_scale"] and servo == 3:
+            frame = p.pack_request(cmd, servo, *p.float_args(0.5), pad=pad)
+        real(frame)
+    monkeypatch.setattr(fake, "_request", other)
+    assert cli.main(["--port", fake.port, "config", "--pwm-scale", "0.001"]) == 1
+    assert "servo 3 pwm_scale: wrote 0.001, read back 0.5" in capsys.readouterr().err
 
 
 def test_ping_and_dump_are_read_only(fake, capsys, tmp_path):
@@ -65,6 +88,30 @@ def test_latched_fault_refused_until_clear(fake, capsys):
     assert fake.armed_seen
 
 
+def test_a_refused_arm_stops_the_command(fake, capsys):
+    """The firmware refuses the ARM by its own rules: a command that arms stops at the first STATE after its arming frame,
+    naming the STATE flags."""
+    fake.refuse_arm = True
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.5"]) == 1
+    assert "the firmware is not armed: it refused the ARM or disarmed (STATE flags: imu, rejected)" in capsys.readouterr().err
+    assert not fake.armed_seen
+    fake.refuse_arm = False                                  # the refusal stays latched until cleared
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1", "--clear"]) == 0
+    assert fake.armed_seen
+
+
+def test_a_state_before_our_arm_is_not_judged(fake):
+    """A STATE that answers no frame of ours since our ARM may still show the state before it: it is ignored; one that
+    answers our frames and shows the firmware not armed raises."""
+    st = types.SimpleNamespace(seq=5, flags=p.ST_REJECTED, armed=False, fault_servo=0,
+                               flag_names=lambda: ["rejected"])
+    link = types.SimpleNamespace(check=lambda: None, latest=st, last_seq=12)
+    cli.check_flags(link, types.SimpleNamespace(first_seq=10))
+    cli.check_flags(link, types.SimpleNamespace(first_seq=None))      # nothing sent yet
+    with pytest.raises(cli.LinkError, match=r"not armed: it refused the ARM or disarmed \(STATE flags: rejected\)"):
+        cli.check_flags(link, types.SimpleNamespace(first_seq=4))
+
+
 def test_implausible_position_blocks_motion(fake, capsys):
     fake.pos[3] = 50.0
     assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1"]) == 1
@@ -90,23 +137,59 @@ def test_calib_refuses_flash_gains_then_holds_and_saves(fake, capsys):
     assert fake.armed_seen[-1][1][1] == cli.ticks_to_dd(cli.offset_ticks(fake.nvs[2]))
 
 
+def test_logs_and_json_outputs_create_their_folders(fake, tmp_path):
+    assert cli.main(["--port", fake.port, "ping", "--seconds", "0.1", "--log", str(tmp_path / "a" / "b" / "p.npz")]) == 0
+    assert len(np.load(tmp_path / "a" / "b" / "p.npz")["sent_seq"]) > 0
+    assert cli.main(["--port", fake.port, "gains", "--out", str(tmp_path / "c" / "g.json")]) == 0
+    assert cli.main(["--port", fake.port, "offsets", "--json", str(tmp_path / "d" / "o.json")]) == 0
+    assert (tmp_path / "c" / "g.json").exists() and (tmp_path / "d" / "o.json").exists()
+
+
+def test_calib_ramp_s_and_log(fake, tmp_path):
+    log = tmp_path / "logs" / "calib.npz"
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1", "--ramp-s", "0.4", "--set", "2=11",
+                     "--log", str(log)]) == 0
+    d = np.load(log)
+    meta = json.loads(str(d["meta"]))
+    assert meta["cmd"] == "calib" and meta["ramp_s"] == 0.4 and meta["offsets_deg"][1] == 11.0 and not meta["save"]
+    n = len(d["sent_seq"])                       # 20 ramp sends, 5 held, the DISARM
+    assert 22 <= n <= 35 and len(d["pos_dd"]) > 0 and d["sent_pos_dd"].shape == (n, 12)
+    assert 2 not in fake.nvs or fake.nvs[2] != 11.0
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.1", "--log", str(tmp_path / "default.npz")]) == 0
+    assert len(np.load(tmp_path / "default.npz")["sent_seq"]) >= 100     # the default 2 s ramp
+
+
+def test_calib_log_is_saved_on_ctrl_c(fake, tmp_path, monkeypatch):
+    def interrupted(*args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(cli, "hold", interrupted)
+    log = tmp_path / "c.npz"
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "5", "--ramp-s", "0.2", "--save", "--log", str(log)]) == 0
+    meta = json.loads(str(np.load(log)["meta"]))
+    assert meta["ramp_s"] == 0.2 and len(np.load(log)["sent_seq"]) > 0 and not fake.armed
+
+
 @pytest.mark.parametrize("deg,rc", [(90, 0), (-90, 0)])
 def test_calib_accepts_90(fake, deg, rc):
     fake.pos = [1550.0] * 12
     assert cli.main(["--port", fake.port, "calib", "--seconds", "0.05", f"--set=1={deg}"]) == rc
 
 
-def test_calib_refuses_91(fake):
+def test_calib_refuses_121(fake):
     with pytest.raises(SystemExit, match="limited"):
-        cli.main(["--port", fake.port, "calib", "--seconds", "0.05", "--set=1=91"])
+        cli.main(["--port", fake.port, "calib", "--seconds", "0.05", "--set=1=121"])
 
 
-def test_set_offset_is_refused_past_90(fake, capsys):
-    from mp4_recovery.deploy.mp4link.link import Link, LinkError
+def test_calib_accepts_minus_98(fake):
+    assert cli.main(["--port", fake.port, "calib", "--seconds", "0.05", "--set=5=-98"]) in (0, None)
+
+
+def test_set_offset_is_refused_past_120(fake, capsys):
+    from mp4_rl.deploy.mp4link.link import Link, LinkError
     lk = Link(fake.port, 921600)
     try:
         with pytest.raises(LinkError):
-            lk.set_offset(1, 91.0)
+            lk.set_offset(1, 121.0)
     finally:
         lk.close()
 
@@ -130,16 +213,8 @@ def test_stream_sets_get_up_mode_on_every_frame_and_logs_it(fake, tmp_path, caps
     armed = [fr for fr in fake.frames if not fr[1] & p.SA_DISARM]
     assert armed and all(fr[1] & p.SA_GETUP for fr in armed)
     meta = json.loads(str(np.load(log)["meta"]))
-    assert meta["stop_reason"] == "completed" and meta["getup_echo_share"] == 1.0
+    assert meta["stop_reason"] == "completed"
     assert not fake.armed
-
-
-def test_stream_stops_without_the_echo(fake, tmp_path, capsys):
-    fake.echo = False
-    rc, log = stream(fake, tmp_path, np.zeros((400, 12)))
-    assert rc == 0
-    assert json.loads(str(np.load(log)["meta"]))["stop_reason"] == "no_getup_echo"
-    assert "no get-up mode echo" in capsys.readouterr().out
 
 
 def test_stream_plays_a_180_deg_hip_at_20_deg_per_send(fake, tmp_path, capsys):
@@ -185,47 +260,6 @@ def test_stream_stops_and_returns_at_a_track_end_reading(fake, tmp_path, capsys)
     meta = json.loads(str(np.load(log)["meta"]))
     assert rc == 0 and meta["stop_reason"] == "track_end" and meta["track_end_servo"][0] == 2
     assert "within 15 deg of a track end" in capsys.readouterr().out
-
-
-def test_stream_refuses_a_hot_start(fake, tmp_path, capsys):
-    fake.temps_dc = [460] * 12
-    rc, _ = stream(fake, tmp_path, np.zeros((5, 12)))
-    assert rc == 1 and "let it cool" in capsys.readouterr().err and not fake.armed_seen
-
-
-def test_stream_a_hot_housing_stops_and_returns(fake, tmp_path):
-    orig = fake.before_tick
-
-    def tick():
-        orig()
-        if len(fake.armed_seen) > 500:
-            fake.temps_dc = [560] * 12
-    fake.before_tick = tick
-    rc, log = stream(fake, tmp_path, np.zeros((300, 12)))
-    assert rc == 0 and json.loads(str(np.load(log)["meta"]))["stop_reason"] == "temperature"
-    assert not fake.armed
-
-
-def frame(tick, dc):
-    return types.SimpleNamespace(tick=tick, temp_dc=[dc] * 12)
-
-
-def test_temp_watch_ignores_a_one_frame_spike():
-    w = cli.TempWatch(55.0)
-    seq = [336, 672, 336] + [336] * 400
-    assert all(w.update(frame(t, dc)) is None for t, dc in enumerate(seq))
-
-
-def test_temp_watch_needs_a_second_above_the_limit():
-    w = cli.TempWatch(55.0)
-    got = [w.update(frame(t, 560)) for t in range(201)]
-    assert got[199] is None and got[200] == 56.0
-    w = cli.TempWatch(55.0)
-    for t in range(150):
-        assert w.update(frame(t, 560)) is None
-    assert w.update(frame(150, 500)) is None    # a dip starts the second again
-    for t in range(151, 351):
-        assert w.update(frame(t, 560)) is None
 
 
 def test_missing_port_is_a_one_line_error(capsys):

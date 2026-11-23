@@ -4,11 +4,11 @@ import json
 import math
 from pathlib import Path
 
+import compare_run as tc  # noqa: E402
 import numpy as np
 import pytest
 
-import compare_run as tc  # noqa: E402
-from mp4_recovery.contract import Contract  # noqa: E402
+from mp4_rl.common.policy import Contract  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "data" / "compare_run"
 
@@ -149,7 +149,7 @@ def test_parse_run_fixture_and_real_series():
 
 
 def test_fixture_actions_reproduce_and_gravity_clean():
-    from mp4_recovery.deploy.runner import load_mount
+    from mp4_rl.deploy.runner.runner import load_mount
     run = tc.load_run(DATA / "fake_left")
     w = tc.getup_window(run)
     real = tc.real_series(run, w)

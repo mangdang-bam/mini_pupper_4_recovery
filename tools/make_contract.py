@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Write the policy contract for another Mini Pupper v4 unit, or for this one after a recalibration.
+"""Write the calibration file for another Mini Pupper v4 unit, or for this one after a recalibration.
 
-The contract holds the robot's calibration: its offsets, and the stand they give in the servos' units. Calibrate the robot, read
-the offsets on the Pi, and make the contract on any machine:
+The calibration holds the robot's offsets and the stand they give in the servos' units. Calibrate the robot, read the
+offsets on the Pi, and make the file on any machine:
 
-    python3 -m mp4_recovery.deploy.mp4link offsets --json offsets.json
-    PYTHONPATH=src python3 tools/make_contract.py offsets.json --note "unit 2, calibrated 2027-01-10" \\
-        --out src/mp4_recovery/data/sku2_contract.json
+    python3 -m mp4_rl.deploy.mp4link offsets --json offsets.json
+    .venv/bin/python tools/make_contract.py offsets.json --note "unit 2, calibrated 2027-01-10" \\
+        --out my_robot/sku2_contract.json
 
 Only ``offsets_deg``, ``stand_dd``, ``stand_ticks`` and ``calibration`` change; the file replaced is listed under
-``calibrations_superseded``, so policies exported for it still pass the contract check of ``runner check``.
+``earlier_calibrations``, so policies exported for it still pass the calibration check of ``runner check``.
 
 **What must then be re-exported.** A policy's decoder bounds hold the limits of the potentiometer tracks measured from the
-stand, so they belong to one calibration, and ``runner run`` refuses a policy whose bounds were made for another stand. With the
-new contract in place, write each policy's bounds again (the network itself is unchanged; ``policies/getup_sim`` likewise):
+stand, so they belong to one calibration, and ``runner run`` refuses a policy whose bounds were made for another stand. Write
+each policy's bounds again for the new calibration (the network itself is unchanged); the folder gets a copy of it:
 
-    python -m mp4_recovery.export_policy --from-policy policies/walker policies/walker_new
-    python -m mp4_recovery.export_policy --from-policy policies/getup policies/getup_new
+    .venv/bin/python -m mp4_rl.common.export --from-policy mp4_rl/skills/walker/policies/sku2 my_robot/walker --contract my_robot/sku2_contract.json
+    .venv/bin/python -m mp4_rl.common.export --from-policy mp4_rl/skills/getup/policies/sku2 my_robot/getup --contract my_robot/sku2_contract.json
 
-and run ``runner check`` on the results. The joint limits in ``data/sku2_joint_limits.json`` were measured on one unit and are
-kept. Where a stand moved far along a joint's track, the bounds can cut motions the policy learned: compare the new bounds with
-the old ones, and retrain or re-horn the joint if a range shrank a lot.
+and run ``runner check`` on the results. The joint limits (``mp4_sim``'s ``sku2_joint_limits.json``) were measured on one
+unit and are kept. Where a stand moved far along a joint's track, the bounds can cut motions the policy learned: compare the
+new bounds with the old ones, and retrain or re-horn the joint if a range shrank a lot.
 """
 import argparse
 import dataclasses
@@ -29,8 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
-from mp4_recovery.contract import ACTION_SIZE, CONTRACT_JSON, Contract
-from mp4_recovery.paths import sha256
+from mp4_rl.common.policy import ACTION_SIZE, CONTRACT_JSON, Contract
+from mp4_rl.paths import sha256
 
 
 def build(base_path, offsets, note: str) -> dict:
@@ -41,7 +41,7 @@ def build(base_path, offsets, note: str) -> dict:
         raise ValueError(f"12 offsets expected, got {new.shape}")
     ticks = dataclasses.replace(base, offsets_deg=new).ticks_from_servo_deg(np.zeros(ACTION_SIZE))
     d = json.loads(Path(base_path).read_text())
-    d["calibrations_superseded"] = d.get("calibrations_superseded", []) + [
+    d["earlier_calibrations"] = d.get("earlier_calibrations", []) + [
         {"sha256": sha256(base_path), "note": note, "offsets_deg": [float(v) for v in base.offsets_deg]}]
     d.update(offsets_deg=[float(v) for v in new], stand_dd=[int(v) for v in base.dd_from_ticks(ticks)],
              stand_ticks=[int(v) for v in ticks], calibration=note)
@@ -53,7 +53,7 @@ def main(argv=None) -> int:
     ap.add_argument("offsets_json", help="the file `mp4link offsets --json` wrote")
     ap.add_argument("--note", required=True, help="which robot, and when it was calibrated")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--base", default=str(CONTRACT_JSON), help="the contract to start from (default: the shipped one)")
+    ap.add_argument("--base", default=str(CONTRACT_JSON), help="the calibration to start from (default: the SKU2's in mp4_sim)")
     a = ap.parse_args(argv)
     robot = json.loads(Path(a.offsets_json).read_text())
     if not all(robot["offsets_stored"]):

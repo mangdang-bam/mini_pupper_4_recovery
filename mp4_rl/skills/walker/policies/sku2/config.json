@@ -1,0 +1,336 @@
+{
+ "task": {
+  "options": {
+   "num_envs": 1024,
+   "noise_start": {
+    "ang_vel": 0.02,
+    "gravity": 0.01,
+    "pos": 0.002,
+    "vel": 0.05
+   },
+   "noise_end": {
+    "ang_vel": [
+     0.02,
+     0.02,
+     0.191237
+    ],
+    "gravity": [
+     0.177033,
+     0.254203,
+     0.291005
+    ],
+    "pos": [
+     0.005555,
+     0.011213,
+     0.002,
+     0.004242,
+     0.012273,
+     0.002,
+     0.002,
+     0.005928,
+     0.002,
+     0.004398,
+     0.002687,
+     0.002
+    ],
+    "vel": [
+     0.411952,
+     0.096427,
+     0.05,
+     0.389065,
+     0.110445,
+     0.05882,
+     0.129428,
+     0.142161,
+     0.05,
+     0.476616,
+     0.125211,
+     0.057773
+    ]
+   },
+   "noise_ramp": true,
+   "noisy": true,
+   "randomise": true,
+   "chain_ms": [
+    8.0,
+    19.0
+   ],
+   "action_scale": [
+    0.25,
+    0.5,
+    0.5,
+    0.25,
+    0.5,
+    0.5,
+    0.25,
+    0.5,
+    0.5,
+    0.25,
+    0.5,
+    0.5
+   ],
+   "episode_s": 20.0,
+   "visuals": false,
+   "actuator": "md300",
+   "supply_v_range": [
+    10.5,
+    12.6
+   ],
+   "supply_drop_ohm_range": null,
+   "r_scale_range": [
+    0.95,
+    1.15
+   ],
+   "terrain": "narrow",
+   "rows": 10,
+   "families": null,
+   "difficulty_max": 1.0,
+   "relief_pitch": null,
+   "tile": 1.6,
+   "terrain_seed": 0,
+   "max_init_level": 9,
+   "band_deg": null,
+   "history": 10,
+   "masses_json": "sku2_masses.json",
+   "self_collision": true,
+   "friction_range": [
+    0.4,
+    1.3
+   ],
+   "foot_solref": [
+    0.01,
+    1.0
+   ],
+   "fixed_command": null,
+   "level": null,
+   "stair_layout": null,
+   "stair_width": null,
+   "stair_landing": null,
+   "tilt_limit": 1.0,
+   "limits": true,
+   "widen_limits_deg": null,
+   "stand_offset_abd_deg": 12.0,
+   "legs": "sku_2",
+   "foot": "sphere",
+   "foot_radius_m": 0.0055,
+   "narrow_risers": [
+    0.025,
+    0.045
+   ],
+   "boxes_share": null,
+   "vx_max": 0.12,
+   "wz_max": 0.6,
+   "rel_standing": 0.1,
+   "resample_s": [
+    5.0,
+    10.0
+   ],
+   "push_mps": 0.05,
+   "push_range": [
+    0.0,
+    0.6
+   ],
+   "push_interval": [
+    4.0,
+    8.0
+   ],
+   "topple_range": [
+    0.6,
+    1.5
+   ],
+   "topple_interval": [
+    8.0,
+    15.0
+   ],
+   "topple_start_step": 235344,
+   "push_fall_grace": 2.0,
+   "push_obs": true,
+   "heading": "loop",
+   "heading_kp": 2.0,
+   "heading_turn": 1.0,
+   "rel_heading": 0.75,
+   "heading_law": "pi",
+   "heading_wz": 0.4,
+   "alive": 0.0,
+   "terminated": 0.0,
+   "progress": 2.0,
+   "overspeed": -2.0,
+   "omni_promote_rel": 0.8,
+   "stumble": -0.5,
+   "clearance": "apex",
+   "clearance_weight": -2.0,
+   "clearance_target": 0.025,
+   "foot_softness": [
+    0.005,
+    0.02
+   ],
+   "abduction": 0.0,
+   "leg_contact": -0.5,
+   "stair_exit": true,
+   "omni_mix": "spin_up",
+   "omni_shares": [
+    0.2,
+    0.25,
+    0.4,
+    0.05,
+    0.1
+   ],
+   "fwd_vx_range": [
+    0.12,
+    0.2
+   ],
+   "omni_speed_max": [
+    0.12,
+    0.2
+   ],
+   "omni_wz": [
+    0.6,
+    1.0
+   ],
+   "spin_wz_max": [
+    1.0,
+    2.0
+   ],
+   "turn_wz_max": [
+    0.6,
+    1.0
+   ],
+   "cmd_ramp_iters": 0,
+   "cmd_ramp_start_step": 235344,
+   "cmd_fast_share": 0.4,
+   "fast_speed": [
+    0.15,
+    0.2
+   ],
+   "fast_wz": [
+    1.0,
+    2.0
+   ],
+   "yaw_zero_share": 0.3,
+   "yaw_hold_weight": 2.0,
+   "yaw_hold_std": 0.1,
+   "spin_progress_weight": 1.0,
+   "yaw_sign_stats": true,
+   "attachment": {
+    "height_mm": [
+     35.0,
+     35.0
+    ],
+    "mass_g": [
+     43.2,
+     43.2
+    ],
+    "x_mm": [
+     43.0,
+     43.0
+    ],
+    "radius_mm": 19.0,
+    "present": 0.5
+   }
+  },
+  "servo_model": "md300",
+  "servo_params": {
+   "roles": {
+    "abd": {
+     "params": "mp4_sim:actuators/params/md300/md300_id_1_m6.json",
+     "sha256": "167db136411b2cd90f19967249394fbd72c9cb06650868b01f72f273730f0f27",
+     "command_delay_steps": 5
+    },
+    "hip": {
+     "params": "mp4_sim:actuators/params/md300/md300_id_2_m6.json",
+     "sha256": "304edbc8551c682a5e398328be814f76e631506264c2d9bc9edf464810960037",
+     "command_delay_steps": 4
+    },
+    "knee": {
+     "params": "mp4_sim:actuators/params/md300/md300_id_3_m6.json",
+     "sha256": "330cc38b64416421130ec73470aa055b87a2d4e9c66251e002f936b8f7498336",
+     "command_delay_steps": 3
+    }
+   },
+   "firmware": {
+    "kp": 80.0,
+    "kd": 400.0,
+    "pwm_scale": 0.001,
+    "max_pwm": 0.99,
+    "cur_cap_ma": 2000,
+    "vin": 12.0
+   },
+   "randomise": {
+    "supply_v_range": [
+     10.5,
+     12.6
+    ],
+    "supply_drop_ohm_range": null,
+    "r_scale_range": [
+     0.95,
+     1.15
+    ]
+   }
+  },
+  "latency_steps": [
+   5,
+   4,
+   3
+  ],
+  "decimation": 20,
+  "physics_dt": 0.001,
+  "sources": {
+   "mp4_sim:robot/assets/sku_2/pupper.xml": "455316472c9c059c7bb9e2d5236f87c59a6d58e42071c89507fcbe8bf83f3dcf",
+   "mp4_sim:robot/assets/sku_2/measured/sku2_masses.json": "823884dc6eb1ad710395357013cc0b7971e303b1fb9d8def4579861c1800c00b",
+   "mp4_sim:robot/assets/sku_2/measured/sku2_joint_limits.json": "9cad8e76f4b8bf505c4283905106be9786ef2c81a2bffa75ece404c51c026312"
+  },
+  "legs": {
+   "legs": "sku_2",
+   "foot": "sphere",
+   "foot_radius_m": 0.0055,
+   "model": "robot/assets/sku_2/pupper.xml",
+   "model_sha256": "455316472c9c059c7bb9e2d5236f87c59a6d58e42071c89507fcbe8bf83f3dcf",
+   "stand_base_z_m": 0.075162,
+   "init_base_z_m": 0.074707,
+   "foot_site_clearance_m": 0.00411,
+   "hip_axis_height_m": 0.072206
+  },
+  "limits": {
+   "limits": true,
+   "mode": "walk",
+   "stand_offset_abd_deg": 12.0,
+   "limits_json": "mp4_sim:robot/assets/sku_2/measured/sku2_joint_limits.json",
+   "limits_sha256": "9cad8e76f4b8bf505c4283905106be9786ef2c81a2bffa75ece404c51c026312",
+   "joint_ranges": {
+    "FR_hip": [
+     -0.38746309394274114,
+     0.49741883681838395
+    ],
+    "FR_calf": [
+     -1.354998582090562,
+     1.1059156632214429
+    ],
+    "FL_hip": [
+     -0.5410520681182421,
+     0.4014257279586958
+    ],
+    "FL_calf": [
+     -1.0954436877094769,
+     1.5190595317780289
+    ],
+    "RR_hip": [
+     -0.5113814708343386,
+     0.3420845333908886
+    ],
+    "RR_calf": [
+     -1.3968864841384259,
+     0.9959599203458
+    ],
+    "RL_hip": [
+     -0.36302848441482055,
+     0.4380776422505767
+    ],
+    "RL_calf": [
+     -1.1076609924734373,
+     1.3043840337827264
+    ]
+   }
+  }
+ },
+ "noise": "measured"
+}

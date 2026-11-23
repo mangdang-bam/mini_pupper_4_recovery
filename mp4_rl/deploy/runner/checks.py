@@ -1,0 +1,182 @@
+"""What the runner refuses: policies the robot must not run, and targets it must not send.
+
+**Calibration.** Each policy folder carries the calibration it was exported for (``<robot>_contract.json``, a copy of
+``mp4_sim``'s file; ``CALIBRATION_GLOB``) and the joint limits (``<robot>_joint_limits.json``). The runner reads the
+calibration from the folder (never from elsewhere): it refuses a folder without exactly one, a calibration whose sha256
+is neither the policy's meta ``contract_sha256`` nor one the file lists as replaced (``earlier_calibrations``: they
+differ only in the offsets and the stand, and the bounds check ``calibration_refusal`` compares the stand), and a
+walking and a get-up policy that carry different calibrations (``pair_calibration_refusal``).
+"""
+from __future__ import annotations
+
+import copy
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+
+from mp4_rl import paths
+from mp4_rl.common.policy import (
+    BAND_DEG,
+    POLICY_KINDS,
+    ROBOT_BAND_MAX_DEG,
+    ROBOT_GETUP_BAND_MAX_DEG,
+    TRACK_DD,
+    ActionDecoder,
+    Contract,
+    calibration_refusal,
+    contract_tendon_coefs,
+    leg_set_name,
+    policy_band_deg,
+    policy_bounds,
+    policy_kind,
+    policy_stand_offset_deg,
+)
+
+TARGET_END_DEG = 15.0          # every target's dd at least this far from a potentiometer's track end
+BOUNDS_TOL_RAD = 1e-9
+SELFTEST_STEPS = 400
+
+
+# The robot this runner drives, as a policy's meta names what it was trained on: the servo model (``actuator``) and the
+# model's legs and feet (``legs``: ``mp4_sim.robot.model.legs_meta``, its model file's sha256). tests/cpu/test_runner_checks.py
+# checks these against mp4_sim's SKU2 model and its default servo model.
+ROBOT_ACTUATOR = "md300"
+ROBOT_LEGS = {"legs": "sku_2", "foot": "sphere", "foot_radius_m": 0.0055,
+              "model_sha256": "455316472c9c059c7bb9e2d5236f87c59a6d58e42071c89507fcbe8bf83f3dcf"}
+
+
+def robot_refusal(meta: dict) -> str | None:
+    """Why this robot must not run a policy trained for another, or None: the meta's servo model, leg set, foot or model
+    file (its sha256, never its path) differ from the robot's (``ROBOT_ACTUATOR``, ``ROBOT_LEGS``)."""
+    actuator = meta.get("actuator")
+    if actuator != ROBOT_ACTUATOR:
+        return f"trained on the servo model {actuator or '(not named)'}, the robot's is {ROBOT_ACTUATOR}"
+    legs = meta.get("legs")
+    if not isinstance(legs, dict):
+        return "the policy's meta names no legs: it was not trained on this robot's model"
+    try:
+        name = leg_set_name(legs.get("legs"))
+    except ValueError as exc:
+        return str(exc)
+    if name != ROBOT_LEGS["legs"]:
+        return f"trained on the legs {name}, the robot's are {ROBOT_LEGS['legs']}"
+    if legs.get("foot") != ROBOT_LEGS["foot"]:
+        return f"trained on the foot {legs.get('foot')!r}, the robot's model uses {ROBOT_LEGS['foot']!r}"
+    r = legs.get("foot_radius_m")
+    if r is None or abs(float(r) - ROBOT_LEGS["foot_radius_m"]) > 1e-9:
+        return f"trained on a {r} m foot, the robot's model uses {ROBOT_LEGS['foot_radius_m']} m"
+    if legs.get("model_sha256") != ROBOT_LEGS["model_sha256"]:
+        return (f"trained on another robot model (sha256 {str(legs.get('model_sha256'))[:12]}, the robot's "
+                f"{ROBOT_LEGS['model_sha256'][:12]})")
+    return None
+
+
+CALIBRATION_GLOB = "*_contract.json"
+
+
+def folder_calibration(folder) -> tuple[Path | None, str | None]:
+    """The calibration file a policy folder carries, and None; or None and why it cannot be used."""
+    found = sorted(Path(folder).glob(CALIBRATION_GLOB))
+    if not found:
+        return None, (f"{folder}: no calibration file ({CALIBRATION_GLOB}) beside the policy: export the policy with "
+                      "its calibration")
+    if len(found) > 1:
+        return None, f"{folder}: more than one calibration file ({', '.join(f.name for f in found)})"
+    return found[0], None
+
+
+def calibration_file_refusal(meta: dict, path) -> str | None:
+    """Why a policy must not run with the calibration file ``path``, or None: the file's sha256 is the meta's
+    ``contract_sha256`` or one of the calibrations the file lists as replaced (``earlier_calibrations``)."""
+    want = meta.get("contract_sha256")
+    have = paths.sha256(path)
+    if want == have:
+        return None
+    earlier = {c.get("sha256") for c in json.loads(Path(path).read_text()).get("earlier_calibrations", [])}
+    if want is not None and want in earlier:
+        return None
+    return (f"the policy was exported for the calibration {str(want)[:12]}, its folder carries {have[:12]} "
+            f"({Path(path).name}): export the policy for this calibration")
+
+
+def pair_calibration_refusal(walker_path, getup_path) -> str | None:
+    """Why a walking and a get-up policy must not run together, or None: their folders' calibrations differ."""
+    a, b = paths.sha256(walker_path), paths.sha256(getup_path)
+    if a != b:
+        return f"the walking and the get-up policy carry different calibrations ({a[:12]}, {b[:12]})"
+    return None
+
+
+def band_refusal(meta: dict, contract: Contract | None = None) -> str | None:
+    """Why the robot must not run a policy, or None: its band is wider than 90 deg (180 for a get-up policy with decoder
+    bounds, which keep its targets out of the dead zones), a walking policy's is wider than the walking band, or its bounds
+    were made for another calibration (``contract``; None: the package's SKU2 calibration)."""
+    try:
+        band = policy_band_deg(meta)
+    except ValueError as exc:
+        return str(exc)
+    kind = policy_kind(meta)
+    if kind not in POLICY_KINDS:
+        return f"unknown policy kind {kind!r}"
+    try:
+        bounds = policy_bounds(meta)
+        offset = policy_stand_offset_deg(meta)
+    except (ValueError, KeyError, TypeError) as exc:
+        return f"bounds: {exc}"
+    widest = ROBOT_GETUP_BAND_MAX_DEG if kind == "getup" and bounds is not None else ROBOT_BAND_MAX_DEG
+    if band.max() > widest:
+        why = f"band {band.max():g} deg is wider than the robot's {widest:g}"
+        if kind == "getup" and bounds is None and band.max() <= ROBOT_GETUP_BAND_MAX_DEG:
+            why += f" (a get-up policy runs up to {ROBOT_GETUP_BAND_MAX_DEG:g} only with decoder bounds)"
+        return why
+    if kind == "walk" and np.any(band > BAND_DEG):
+        return "a walk policy's band is wider than the walking band 20/60 deg"
+    if kind == "getup" and "bounds" in meta and bounds is None:
+        return "a get-up policy exported without decoder bounds (export it with the limits)"
+    if offset and bounds is None:
+        return f"a stand offset ({offset:g} deg) without decoder bounds"
+    c = Contract.load() if contract is None else contract
+    if bounds is not None:
+        if not np.array_equal(contract_tendon_coefs(c), bounds.kc):
+            return "bounds: tendon coefficients differ from the contract's"
+    return calibration_refusal(meta, c)
+
+
+def target_refusal(dec: ActionDecoder, d: dict) -> str | None:
+    """Why a decoded target must not be sent, or None: outside the decoder's bounds (before the tick quantisation; by
+    construction never), or its dd within ``TARGET_END_DEG`` of a track end."""
+    if dec.bounds is not None:
+        v = dec.bounds.violation_rel(d["rel_exact"], dec.c.stand_rel_rad)
+        if v > BOUNDS_TOL_RAD:
+            return f"a target {math.degrees(v):.3g} deg outside the policy's bounds"
+    dd = d.get("dd")
+    if dd is not None:
+        m = 10.0 * TARGET_END_DEG
+        bad = np.flatnonzero((np.asarray(dd) < TRACK_DD[0] + m) | (np.asarray(dd) > TRACK_DD[1] - m))
+        if bad.size:
+            i = int(bad[0])
+            return f"servo {i + 1} target {int(dd[i])} dd within {TARGET_END_DEG:g} deg of its track end"
+    return None
+
+
+def decoder_selftest(dec: ActionDecoder, contract: Contract, seed: int = 0, steps: int = SELFTEST_STEPS) -> str | None:
+    """Before arming: drive a copy of the decoder from extreme and random measured poses with saturated and random actions;
+    every target must pass ``target_refusal``. Returns the first failure or None."""
+    rng = np.random.default_rng(seed)
+    d0 = copy.deepcopy(dec)
+    ends = np.stack([contract.rel_from_dd(np.full(12, TRACK_DD[0])), contract.rel_from_dd(np.full(12, TRACK_DD[1]))])
+    starts = [None, np.full(12, math.pi), np.full(12, -math.pi), ends[0], ends[1],
+              rng.uniform(-math.pi, math.pi, 12), rng.uniform(ends.min(0), ends.max(0))]
+    per = max(1, steps // len(starts))
+    for rel0 in starts:
+        d0.reset(rel0)
+        for k in range(per):
+            r = k % 4
+            a = (np.ones(12) if r == 0 else -np.ones(12) if r == 1 else rng.choice([-1.0, 1.0], 12) if r == 2
+                 else rng.uniform(-1.0, 1.0, 12))
+            why = target_refusal(d0, d0(a))
+            if why:
+                return why
+    return None

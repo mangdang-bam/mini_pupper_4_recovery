@@ -1,11 +1,11 @@
-"""Observation normalisation for the get-up network (``mp4_recovery.obs_norm``; ``train --actor-hidden
+"""Observation normalisation for the get-up network (``mp4_rl.common.obs_norm``; ``train --actor-hidden
 --critic-hidden --obs-norm --obs-norm-freeze``)."""
 from pathlib import Path
 
 import torch
 from tensordict import TensorDict
 
-from mp4_recovery import obs_norm
+from mp4_rl.common import obs_norm
 
 REPO = Path(__file__).resolve().parents[2]
 

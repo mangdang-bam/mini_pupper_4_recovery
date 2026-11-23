@@ -1,21 +1,20 @@
 """eval/sequence.py: its vectorised complementary filter is the runner's, its observation layout is mjlab's (and
-``contract.HistoryStacker``'s), and on the GPU a forced GETUP switches the action config, seeds the decoder and hands
+``policy.HistoryStacker``'s), and on the GPU a forced GETUP switches the action config, seeds the decoder and hands
 back to the walker as the runner does."""
 import json
 from pathlib import Path
 
 import numpy as np
-
-from mp4_recovery import paths
 import pytest
 import torch
 
-from mp4_recovery.eval import sequence as sc  # noqa: E402
-from mp4_recovery.deploy import runner as rn  # noqa: E402
-from mp4_recovery.contract import CONTRACT_JSON, HistoryStacker  # noqa: E402
+from mp4_rl import paths
+from mp4_rl.common.policy import CONTRACT_JSON, HistoryStacker  # noqa: E402
+from mp4_rl.deploy.runner import runner as rn  # noqa: E402
+from mp4_rl.skills.getup.eval import sequence as sc  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-WALKER = REPO / "policies" / "walker"
+WALKER = REPO / "mp4_rl" / "skills" / "walker" / "policies" / "sku2"
 
 
 def test_torch_filter_is_the_runners():
@@ -144,7 +143,7 @@ def test_kick_schedule_draws():
 
 
 def test_sectors_bins_and_commands():
-    from mp4_recovery.eval import push_eval as pe
+    from mp4_rl.skills.walker.eval import push as pe
     assert sc.sector_of([0, 22.4, 22.6, 90, 180, 337.4, 337.6, 359.9, -10]).tolist() == [0, 0, 1, 2, 4, 7, 0, 0, 0]
     assert [pe.dir_label(360 * i / 8) for i in range(8)][:3] == ["from_back", "from_back_right", "from_right"]
     assert sc.mag_bins(0.5, 1.5) == [(0.5, 0.75), (0.75, 1.0), (1.0, 1.25), (1.25, 1.5)]
@@ -327,3 +326,122 @@ def test_phase_restart_steps_against_the_runners(tmp_path, monkeypatch, name):
         assert got == case["restarts"]["sim"], (r, got)
     want_same = "differs_because" not in case
     assert (case["restarts"]["sim"] == case["restarts"]["runner"]) is want_same
+
+
+def test_handback_options_reach_the_rules(tmp_path):
+    """A tilt threshold no robot can meet keeps them in GETUP; the JSON records the rules in force."""
+    g = zero_getup(tmp_path / "getup")
+    out = tmp_path / "sequence.json"
+    rc = sc.main(["--walker", str(WALKER), "--getup", str(g), "--robots", "2", "--seconds", "3", "--kick", "0",
+                  "--force-getup-t", "1.0", "--handback-tilt", "0", "--handback-gyro", "5", "--handback-rms", "20",
+                  "--seed", "11", "--json", str(out)])
+    assert rc == 0
+    d = json.loads(out.read_text())
+    assert not [e for e in d["events"] if e["event"] == "hand-back"]
+    assert d["rules"]["handback"] == [0.0, 5.0, 20.0, rn.HANDBACK_STEPS]
+
+
+def test_defaults_are_the_runners(tmp_path):
+    g = zero_getup(tmp_path / "getup")
+    out = tmp_path / "sequence.json"
+    assert sc.main(["--walker", str(WALKER), "--getup", str(g), "--robots", "1", "--seconds", "1", "--kick", "0",
+                    "--seed", "11", "--json", str(out)]) == 0
+    d = json.loads(out.read_text())
+    assert d["getup_timeout_s"] == 20.0 and d["rules"]["handback"] == [rn.HANDBACK_TILT_DEG, rn.HANDBACK_GYRO,
+                                                                       rn.HANDBACK_RMS_DEG, rn.HANDBACK_STEPS]
+
+
+def test_reach_in_simulation(tmp_path, capsys):
+    """Two robots forced into GETUP report every leg against the proven reach, in the JSON and printed."""
+    g = zero_getup(tmp_path / "getup")
+    out = tmp_path / "sequence.json"
+    rc = sc.main(["--walker", str(WALKER), "--getup", str(g), "--robots", "2", "--seconds", "2", "--kick", "0",
+                  "--force-getup-t", "1.0", "--seed", "11", "--reach", "--json", str(out)])
+    assert rc == 0
+    reach = json.loads(out.read_text())["reach"]
+    assert set(reach["legs"]) == {"FR", "FL", "RR", "RL"}
+    for r in reach["legs"].values():                # a stand-seeking get-up stays near the stand
+        assert abs(r["commanded_max_deg"]) < 20.0 and abs(r["measured_max_deg"]) < 20.0
+    assert "reach RR: commanded" in capsys.readouterr().out
+
+
+def fall_run(T=400, n=6):
+    """Tilt and events of six falls: the rows ``test_route_*`` read."""
+    tilt = np.full((T, n), 5.0)
+    ev = []
+
+    def getup(r, k, gy, peak, up_at=None, restart_at=None):
+        ev.append({"k": k, "robot": r, "event": "getup", "gravity": [0.0, gy, -0.7]})
+        end = up_at or restart_at or T
+        tilt[k:end, r] = np.linspace(50.0, peak, end - k)
+        if up_at:
+            ev.append({"k": up_at, "robot": r, "event": "hand-back"})
+        if restart_at:
+            ev.append({"k": restart_at, "robot": r, "event": "phase-restart"})
+            tilt[restart_at:, r] = 178.0                 # what happens after the first attempt doesn't count
+    getup(0, 10, -0.7, 176.0, up_at=110)                 # right, via the back, up in 2 s
+    getup(1, 10, -0.7, 90.0, up_at=60)                   # right, direct, up in 1 s
+    getup(2, 10, 0.7, 150.0, restart_at=260)             # left, between the two, not up in its attempt
+    getup(3, 10, 0.05, 176.0, up_at=210)                 # neither flank, via the back
+    getup(4, T - 100, 0.7, 176.0)                        # too near the end: left out
+    return ev, tilt
+
+
+def test_route_on_a_fabricated_run():
+    ev, tilt = fall_run()
+    s = sc.route_summary(ev, tilt)
+    a, right, left = s["all"], s["right_lower"], s["left_lower"]
+    assert (a["n"], right["n"], left["n"]) == (4, 2, 1)
+    assert a["over_120"] == 0.75 and a["over_170"] == 0.5 and a["up_in_attempt"] == 0.75
+    assert right["over_120"] == 0.5 and right["over_170"] == 0.5 and right["t_via_back_p50_s"] == 2.0
+    assert right["t_direct_p50_s"] == 1.0 and left["t_direct_p50_s"] is None and left["t_via_back_p50_s"] is None
+    assert left["over_120"] == 1.0 and left["over_170"] == 0.0 and left["up_in_attempt"] == 0.0
+    assert a["t_p50_s"] == 3.0 and a["t_via_back_p50_s"] == 3.0
+    assert a["over_170_in_1s"] == 0.0                     # reached later than its first second
+
+
+def test_route_ends_an_attempt_when_its_robot_ends():
+    tilt = np.full((400, 1), 5.0)
+    tilt[50:100, 0] = 90.0
+    tilt[100:, 0] = 178.0
+    ev = [{"k": 50, "robot": 0, "event": "getup", "gravity": [0.0, -0.7, -0.7]}]
+    assert sc.route_summary(ev, tilt)["all"]["over_170"] == 1.0
+    s = sc.route_summary(ev, tilt, np.array([100]))["all"]
+    assert s["over_170"] == 0.0 and s["t_p50_s"] == 1.0
+
+
+def test_route_of_no_falls():
+    assert sc.route_summary([], np.zeros((100, 2)))["all"] == {
+        "n": 0, "over_120": None, "over_170": None, "over_170_in_1s": None, "up_in_attempt": None, "t_p50_s": None,
+        "t_direct_p50_s": None, "t_via_back_p50_s": None}
+
+
+def test_never_up_and_slow_up():
+    """Limp, still down after over 15 s, up after over 15 s; a robot that rose late and is down again for good is never
+    up; together they are every robot not up at the end."""
+    T, hold = 3000, 25
+    n = 6
+    mode = np.zeros((T, n), int)
+    ok = np.zeros((T - hold + 1, n), bool)
+    ok[:, :] = True
+    entries, end_k, end_code = [], np.full(n, -1), np.zeros(n, int)
+
+    def down(e, a, b):
+        mode[a:b, e] = 1
+        ok[a:b, e] = False
+        entries.append((a, e))
+    down(0, 100, 200)                                    # 2 s
+    down(1, 100, T)                                      # still down, 58 s
+    down(2, 100, 1101)                                   # rose after 20 s
+    down(3, 100, 1100)                                   # limp at 20 s
+    end_k[3], end_code[3] = 1100, 1
+    ok[1100:, 3] = False
+    down(4, 100, 1000)                                   # rose after 18 s, then down for the rest: 20 s
+    down(4, 2000, T)
+    down(5, T - 200, T)                                  # still down, only 4 s
+    kicks = {k: np.zeros(0, int) for k in ("k", "robot", "mag", "deg", "mode")}
+    acc = sc.kick_accounting(mode, ok, kicks, sorted(entries), end_k, end_code, T, hold)
+    R = acc["robots"]
+    assert R["open_down_s"] == [0.0, 58.0, 0.0, 20.0, 20.0, 4.0]
+    assert R["longest_closed_down_s"] == [2.0, 0.0, 20.02, 0.0, 18.0, 0.0]
+    assert sc.down_counts(R) == {"never_up": 3, "slow_up": 1}
