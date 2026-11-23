@@ -35,16 +35,18 @@ NPZ = {
 POLICIES = list(ARRAYS)
 FINAL = {("walker", "sku2"): "sku2/walker/model_10793.pt", ("getup", "sku2"): "sku2/getup/model_7543.pt",
          ("walker", "sku1"): "sku1/walker/model_11792.pt", ("getup", "sku1"): "sku1/getup/model_7543.pt"}
-# each policy's final checkpoint, and the checkpoints the recipes start from (iteration, an observation normaliser)
-CHECKPOINTS = {"sku2/walker/model_10793.pt": (10793, False), "sku2/getup/model_7543.pt": (7543, True),
-               "sku2/walker_start/model_6297.pt": (6297, False), "sku2/getup_start/model_6544.pt": (6544, True),
-               "sku1/walker/model_11792.pt": (11792, False), "sku1/getup/model_7543.pt": (7543, True)}
-SHA = {"sku2/walker/model_10793.pt": "290793f29f483421b0504a752cfdf4fb7b461ad37fbd0b48882f6ea9affd2712",
-       "sku2/getup/model_7543.pt": "2ebb10d46af9561ee684a13362a5febf3afc734eba9cfa94abfc22e223f9ddc7",
-       "sku2/walker_start/model_6297.pt": "33cc59eb3bf1c7384dea50263c719b522cae5bece5997fcf87acbf879f42c4ca",
-       "sku2/getup_start/model_6544.pt": "690dd19d9e627e224d07bd581dae399c79b7e94afaf274d128bed8aa889f6c99",
-       "sku1/walker/model_11792.pt": "b715fa03d141b467e7a3157e4e294248d1d9f4631ca652eb3aa0f8c94a786fac",
-       "sku1/getup/model_7543.pt": "3bf8bef6b18d534f4c50c2017f91ccd56e493c1a6d66d93852f0fa4d30d1079b"}
+# each policy's final checkpoint, and the checkpoints the recipes start from, by (skill, path in its checkpoints/):
+# (iteration, an observation normaliser) and sha256
+CHECKPOINTS = {("walker", "sku2/walker/model_10793.pt"): (10793, False), ("getup", "sku2/getup/model_7543.pt"): (7543, True),
+               ("walker", "sku2/walker_start/model_6297.pt"): (6297, False),
+               ("getup", "sku2/getup_start/model_6544.pt"): (6544, True),
+               ("walker", "sku1/walker/model_11792.pt"): (11792, False), ("getup", "sku1/getup/model_7543.pt"): (7543, True)}
+SHA = {("walker", "sku2/walker/model_10793.pt"): "290793f29f483421b0504a752cfdf4fb7b461ad37fbd0b48882f6ea9affd2712",
+       ("getup", "sku2/getup/model_7543.pt"): "2ebb10d46af9561ee684a13362a5febf3afc734eba9cfa94abfc22e223f9ddc7",
+       ("walker", "sku2/walker_start/model_6297.pt"): "33cc59eb3bf1c7384dea50263c719b522cae5bece5997fcf87acbf879f42c4ca",
+       ("getup", "sku2/getup_start/model_6544.pt"): "690dd19d9e627e224d07bd581dae399c79b7e94afaf274d128bed8aa889f6c99",
+       ("walker", "sku1/walker/model_11792.pt"): "b715fa03d141b467e7a3157e4e294248d1d9f4631ca652eb3aa0f8c94a786fac",
+       ("getup", "sku1/getup/model_7543.pt"): "3bf8bef6b18d534f4c50c2017f91ccd56e493c1a6d66d93852f0fa4d30d1079b"}
 
 
 def ids(p) -> str:
@@ -55,8 +57,7 @@ def policy_dir(name: str, robot: str = "sku2") -> Path:
     return REPO / "mp4_rl" / "skills" / name / "policies" / robot
 
 
-def checkpoint(rel: str) -> Path:
-    skill = "walker" if rel.split("/")[1].startswith("walker") else "getup"
+def checkpoint(skill: str, rel: str) -> Path:
     return REPO / "mp4_rl" / "skills" / skill / "checkpoints" / rel
 
 
@@ -97,7 +98,7 @@ def test_meta_and_config(name, robot):
     meta = NumpyPolicy(policy_dir(name, robot) / "policy.npz").meta
     r = sim_robots.get(robot)
     assert meta["contract_sha256"] == paths.sha256(r.contract_json)
-    assert meta["checkpoint_sha256"] == paths.sha256(checkpoint(FINAL[name, robot])) == SHA[FINAL[name, robot]]
+    assert meta["checkpoint_sha256"] == paths.sha256(checkpoint(name, FINAL[name, robot])) == SHA[name, FINAL[name, robot]]
     assert meta["bounds"]["info"]["limits_sha256"] == paths.sha256(r.limits_json)
     assert meta["legs"]["model_sha256"] == paths.sha256(r.xml)
     if robot == "sku2":
@@ -188,7 +189,7 @@ def test_export_from_policy_keeps_arrays_and_meta(tmp_path, name, robot):
 @pytest.mark.parametrize("name, robot", POLICIES, ids=ids)
 def test_the_final_checkpoints_export_to_the_shipped_policies(tmp_path, name, robot):
     out = tmp_path / name
-    export(checkpoint(FINAL[name, robot]), out)
+    export(checkpoint(name, FINAL[name, robot]), out)
     assert arrays_sha256(out / "policy.npz") == ARRAYS[name, robot]
     same_meta(NumpyPolicy(out / "policy.npz").meta, NumpyPolicy(policy_dir(name, robot) / "policy.npz").meta)
     if robot == "sku1":       # exported from the checkpoint as shipped: the same bytes
@@ -215,8 +216,8 @@ def test_the_sku1_configs_hold_the_options_their_recipes_build(tmp_path, name):
         from mp4_rl.skills.getup import train as tg
         a = tg.parse_args(argv[argv.index("mp4_rl.skills.getup.train") + 1:])
         o = tg.task_options(a)
-    assert paths.sha256(REPO / a.resume) == SHA[{"walker": "sku2/walker/model_10793.pt",
-                                                 "getup": "sku2/getup_start/model_6544.pt"}[name]]
+    assert paths.sha256(REPO / a.resume) == SHA[name, {"walker": "sku2/walker/model_10793.pt",
+                                                       "getup": "sku2/getup_start/model_6544.pt"}[name]]
     built = json.loads(json.dumps({k: asdict(v) if is_dataclass(v) else v for k, v in o.__dict__.items()}))
     assert built == json.loads((policy_dir(name, "sku1") / "config.json").read_text())["task"]["options"]
     assert (a.seed, a.iters) == ({"walker": 210, "getup": 71}[name], 1000)
@@ -224,12 +225,12 @@ def test_the_sku1_configs_hold_the_options_their_recipes_build(tmp_path, name):
 
 def test_checkpoints_load_as_plain_tensors_with_their_options():
     import torch
-    for name, (it, norm) in CHECKPOINTS.items():
-        assert paths.sha256(checkpoint(name)) == SHA[name], name
-        ck = torch.load(checkpoint(name), map_location="cpu", weights_only=True)
+    for (skill, name), (it, norm) in CHECKPOINTS.items():
+        assert paths.sha256(checkpoint(skill, name)) == SHA[skill, name], name
+        ck = torch.load(checkpoint(skill, name), map_location="cpu", weights_only=True)
         assert ck.get("iter") == it and ck["critic_state_dict"] and ck["optimizer_state_dict"]
         assert ("obs_normalizer._mean" in ck["actor_state_dict"]) == norm
-        cfg = checkpoint(name).parent / "config.json"
+        cfg = checkpoint(skill, name).parent / "config.json"
         o = json.loads(cfg.read_text())["task"]["options"]
         assert len(o["action_scale"]) == 12 and o["kind"] in ("walk", "getup")
         assert not any(s in cfg.read_text() for s in LOCAL)

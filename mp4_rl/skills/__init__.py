@@ -1,5 +1,5 @@
 """The bank of policies: one self-contained folder per policy (its README, code, recipes, policies, checkpoints and
-evaluation), registered here. Adding a policy: its folder and one line in ``REGISTRY`` (docs/ADDING_A_POLICY.md).
+evaluation), registered here in ``REGISTRY``. Adding a policy: docs/ADDING_A_POLICY.md.
 Import-free, so the robot side can read it."""
 from pathlib import Path
 

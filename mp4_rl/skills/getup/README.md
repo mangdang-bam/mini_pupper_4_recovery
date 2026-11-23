@@ -237,7 +237,8 @@ another policy with it, add `--display-collision` to the evaluator's command lin
 the folder's `policy.npz`) and byte-identical copies of `config.json`, the calibration and the joint limits. An export
 of the final checkpoint (`checkpoints/sku2/getup/model_7543.pt`) gives the same network arrays and metadata except
 `source_policy_sha256`; the `policy.npz` bytes and `config.json` differ, because the shipped folder is itself a
-`--from-policy` copy. For the SKU1, `--from-policy policies/sku1` gives the same arrays and metadata (plus
+`--from-policy` copy: the file that ran on the robot, re-exported for the published calibration file with its network
+unchanged. For the SKU1, `--from-policy policies/sku1` gives the same arrays and metadata (plus
 `source_policy_sha256`) and byte-identical copies of the other files, and an export of
 `checkpoints/sku1/getup/model_7543.pt` gives the shipped `policy.npz` byte for byte (its `config.json` then holds only the
 checkpoint's options). `tests/cpu/test_policies.py` checks all of them against the shipped folders:

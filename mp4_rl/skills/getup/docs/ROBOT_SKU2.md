@@ -24,11 +24,18 @@ other unit, go through [Adapting to another unit](#adapting-to-another-unit) fir
 ## Firmware
 
 The policies run with the [Mini Pupper v4 firmware](https://github.com/mangdangroboticsclub/minipupper_4_mcu) on the
-ESP32-S3: the Pi sends it the servo targets over UART, in walking and in get-up mode. Build and flash it as its README
-describes. Flashing keeps the calibration offsets.
+ESP32-S3. Build and flash it as its README describes. Flashing keeps the calibration offsets.
 
-**Never flash a factory-profile build** (`sdkconfig.defaults.factory`): it writes an identity into the ESP32's eFuses at
-first boot, which can't be undone.
+**Never flash a factory-profile build:** it writes an identity into the ESP32's eFuses at first boot, which can't be
+undone.
+
+The runner needs two things from the firmware:
+
+- **The serial link to the Pi:** STATE frames at 200 Hz over UART, and SET_ALL frames carrying the servo targets.
+- **The get-up mode, with its get-up current limits:** a SET_ALL with flag bit 3 (`SA_GETUP`) puts the firmware in its
+  get-up mode, where the current guard uses its get-up limits (a get-up holds joints near stall), and the STATE frames
+  echo the mode with flag bit 9 (`ST_GETUP`). If the echo doesn't follow within 0.2 s of a get-up's start, the runner
+  goes limp and stops with `the firmware did not enter get-up mode: it doesn't support the get-up`.
 
 The firmware's safeguards are its own, as its documentation describes. When it refuses an ARM or disarms, the runner
 and `mp4link` stop at once with `the firmware is not armed: it refused the ARM or disarmed`, followed by the STATE flags
@@ -45,7 +52,8 @@ tools/deploy.sh ubuntu@PI walk
 `ubuntu@PI` is the Pi's user and address (for example `ubuntu@raspberrypi.local`), and `walk` the folder in its home directory.
 This copies the runner and the servo link (`mp4_rl/deploy/`), the policy interface, the two policy folders (each with
 the calibration and joint limits it was exported for), three files from the installed `mp4_sim` (`__init__.py`,
-`calibration.py` and the IMU mounting, `imu_mount.json`), and any `runs/streams/` into `~/walk` on the Pi, in the
+`calibration.py` and the IMU mounting, `imu_mount.json`), the first-step timing tool with the simulated board it uses
+(`tools/first_step_timing.py`, `tests/cpu/fake_esp32.py`), and any `runs/streams/` into `~/walk` on the Pi, in the
 package's own layout, and runs `runner check` on each policy there; a failed check prints `FAIL` and stops the script.
 Redeploy after changing a calibration or a policy. The runner reads the calibration from each policy folder and refuses
 a walker and a get-up exported for different calibrations.
@@ -68,6 +76,10 @@ vcgencmd get_throttled              # 0x0 is good; 0x50005 is under-voltage righ
 ```
 
 No STATE means other firmware: stop.
+
+After a new Pi image or a Python or numpy update, `PYTHONPATH=. python3 -B tools/first_step_timing.py --starts 10` (no
+motors: the runner against a simulated board) shows the gap in frames across the walker's first step on this Pi:
+`watchdog trips 0` on the `safeguarded` line means no gap tripped the simulated board's 100 ms watchdog.
 
 **The calibration**, at the start of each day and whenever someone else has used the robot:
 
@@ -180,7 +192,7 @@ stateDiagram-v2
 - **Hand-back:** tilt under 12°, gyro under 0.8 rad/s and the pose within 10° rms of the stand, all held for 25 steps (0.5 s).
 - **Soft faults:** an invalid IMU frame, a non-finite action, a gap in the STATE frames, two late steps in a row.
 - **Limp at once, from any state:** Ctrl-C, a link fault, the firmware refusing the ARM or disarming, a target that fails
-  its check.
+  its check; in a get-up, the firmware not entering get-up mode within 0.2 s.
 
 ### Refusals before arming
 

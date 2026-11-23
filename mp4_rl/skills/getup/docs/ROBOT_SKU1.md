@@ -12,11 +12,9 @@ on its feet; once the robot is upright, the walker takes over again.
 - Mini Pupper v4 (SKU1), calibrated: the policy folders carry the calibration they were exported for
   (`sku1_contract.json`) and its joint limits (`sku1_joint_limits.json`); the robot's offsets have to match it (see
   [Another unit](#another-unit)).
-- The Mini Pupper v4 firmware on the ESP32. Build, flash and load the policies with the firmware's own tools, as its
-  documentation describes; load the two folders `mp4_rl/skills/walker/policies/sku1` and
-  `mp4_rl/skills/getup/policies/sku1`.
-- The get-up needs the firmware's knee-target limit at large thigh angles, which the Mini Pupper v4 firmware applies on
-  the SKU1.
+- The Mini Pupper v4 firmware on the ESP32, built and flashed as its README describes. Load the policy folders with the
+  firmware's tools: `mp4_rl/skills/walker/policies/sku1` and `mp4_rl/skills/getup/policies/sku1`.
+- The get-up needs the firmware's knee-target limit at large thigh angles.
 - A hand ready on the stop, a foam mat for floor falls, and a stand to put the robot on between runs.
 
 ## Safety

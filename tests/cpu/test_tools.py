@@ -73,8 +73,9 @@ def test_a_shipped_policy_is_refused_on_a_new_calibration(tmp_path, monkeypatch)
 
 
 def test_deployed_subset_needs_only_numpy_and_pyserial(tmp_path):
-    """The deployed folder runs the runner with numpy, pyserial and two files of mp4_sim (its import-free
-    ``__init__.py`` and ``calibration.py``); the policies pass their check there with the calibration they carry."""
+    """The deployed folder runs the runner with numpy, pyserial and three files of mp4_sim (its import-free
+    ``__init__.py`` and ``calibration.py``, and the IMU mounting); the policies pass their check there with the calibration
+    they carry."""
     import mp4_sim
     dest = tmp_path / "walk"
     env0 = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"} | {"PYTHON": sys.executable}

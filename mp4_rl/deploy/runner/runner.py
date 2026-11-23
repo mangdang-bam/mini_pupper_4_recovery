@@ -19,7 +19,8 @@ loop starts in the get-up.
 
 **A fall** (``estimators.FallDetector`` on the complementary-filter tilt) during the ramp or walking switches to the get-up
 policy at the next step: its decoder seeded from the measured pose, the observation rebuilt, the command inputs carrying its
-phase clock, and SA_GETUP on every SET_ALL (the firmware's get-up mode).
+phase clock, and SA_GETUP on every SET_ALL (the firmware's get-up mode). The firmware must echo the mode (ST_GETUP) within
+0.2 s; a firmware that does not enter it does not support the get-up, and the run stops (limp).
 **A retry:** when the phase has been at its end for ``--getup-phase-restart`` s and the tilt is still above 45 deg, the clock
 restarts. **The hand-back:** tilt < 12 deg, |gyro| < 0.8 rad/s and the pose within 10 deg rms of the stand (``--handback-tilt``,
 ``--handback-gyro``, ``--handback-rms``), held for 25 steps, returns to the walking policy, its decoder seeded from the measured
@@ -140,6 +141,7 @@ GYRO_BIAS_MAX = 0.02
 CAP_MA = 2000                  # the frame's cap: in the servos' control mode 1, duty <= min(max_pwm, kff x cap)
 HOLD_AFTER_S = 5.0             # at the stand before disarming at the end of a run
 HANDBACK_TILT_DEG, HANDBACK_GYRO, HANDBACK_RMS_DEG, HANDBACK_STEPS = 12.0, 0.8, 10.0, 25
+ECHO_TIMEOUT_S = 0.2
 PHASE_RESTART_TILT_DEG = 45.0
 READING_WATCH_DEG = 5.0
 READING_WATCH_DD = READING_WATCH_DEG * 10.0
@@ -536,7 +538,7 @@ class Runner:
         k_mode = 0                            # steps since the current mode began
         if start_getup:
             self.fall_pending = True
-        g_entry = g_phase = 0                 # the get-up's entry tick, the phase clock's origin tick
+        g_entry = g_echo = g_phase = 0        # the get-up's entry tick, last echo tick, phase clock's origin tick
         hb_run = 0                            # consecutive steps meeting the hand-back criterion
         for k in range(n_steps):
             while True:                       # every frame up to the step's tick, in order
@@ -556,6 +558,8 @@ class Runner:
                         raise StopRun("IMU frame invalid")
                     self.imu_update(s)
                     if self.mode == MODE_GETUP:
+                        if s.flags & p.ST_GETUP:
+                            g_echo = int(s.tick)
                         self.reading_watch(s, len(self.getups))
                 if ((int(st.tick) - next_tick) & 0xFFFFFFFF) < 0x80000000:
                     break
@@ -583,13 +587,19 @@ class Runner:
                 ob.reset()
                 ob.push(st)
                 getup.decoder.reset(pos)
-                g_entry = g_phase = int(st.tick)
+                g_entry = g_echo = g_phase = int(st.tick)
                 if not (start_trigger and k == 0):         # a placed start's reading watch goes on from the run's start
                     self.reading_watch_reset()
                 self.reading_watch(st, ev["n"])
                 hb_run, k_mode = 0, 0
             elif self.mode == MODE_GETUP:
                 ev = self.getups[-1]
+                if ((int(st.tick) - g_echo) & 0xFFFFFFFF) * 0.005 > ECHO_TIMEOUT_S:
+                    msg = "the firmware did not enter get-up mode: it doesn't support the get-up"
+                    self.warnings.append(msg)
+                    self.out("WARNING: " + msg)
+                    ev.update(end="no get-up mode", end_step=k)
+                    raise Disarm("get-up: " + msg)
                 ok = (tcf < getup.handback_tilt_deg and gn < getup.handback_gyro
                       and math.degrees(float(np.sqrt(np.mean(pos ** 2)))) < getup.handback_rms_deg)
                 hb_run = hb_run + 1 if ok else 0
@@ -826,7 +836,7 @@ def cmd_run(link, a) -> int:
             "getup_rules": {"cf_tau_s": CF_TAU_S, "cf_gate_g": list(CF_GATE_G),
                             "fall": [FALL_TILT_DEG, FALL_HOLD_S, FALL_FAST_TILT_DEG, FALL_FAST_GYRO],
                             "handback": [getup.handback_tilt_deg, getup.handback_gyro, getup.handback_rms_deg, HANDBACK_STEPS],
-                            "restart_tilt_deg": PHASE_RESTART_TILT_DEG},
+                            "restart_tilt_deg": PHASE_RESTART_TILT_DEG, "echo_timeout_s": ECHO_TIMEOUT_S},
             "reading_watch": {"deg": READING_WATCH_DEG}}
     runner.warm_up(ob, heading, walker_act, decoder, getup)
     # A full collection over the log's objects can stall every thread for tens of ms: none while armed.

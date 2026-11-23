@@ -38,4 +38,6 @@ def test_the_score_reads_the_sequence_robot_count():
     spec = importlib.util.spec_from_file_location("score", skills.folder("getup") / "eval" / "score.py")
     score = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(score)
-    assert score.seq_robots({"robots": {"kicks": [3, 1, 2]}}) == 3 and score.seq_robots({"robots": 256}) == 256
+    assert score.seq_robots({"summary": {"n": 3}, "robots": {"kicks": [3, 1, 2]}}) == 3
+    assert score.seq_robots({"summary": {"n": 2}, "robots": {"fell": [1, 0]}}) == 2       # a run without --schedule
+    assert score.seq_robots({"robots": 256}) == 256

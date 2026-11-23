@@ -23,7 +23,7 @@ from 0 and 3100 dd: refused, nothing written, otherwise).
 seconds, success and its time, max deviation from the stand per joint, the margin to the track ends, the frames
 ``mp4link stream`` would change: beyond its band or more than its 20 deg per send).
 
-On the robot (lifted, legs free): ``mp4link stream FILE --cap CAP --stop-c 55``, always in the firmware's get-up mode
+On the robot (lifted, legs free): ``mp4link stream FILE --cap CAP``, always in the firmware's get-up mode
 and with the policy decoder's band and step (abduction 90 deg, hip and knee 180 deg, 20 deg per send). See
 mp4_rl/skills/getup/docs/ROBOT_SKU2.md. The JSON counts frames it would change (``frames_beyond_stream_band``, ``frames_over_stream_step``): 0,
 or a frame or two by tick rounding (0.3 deg).

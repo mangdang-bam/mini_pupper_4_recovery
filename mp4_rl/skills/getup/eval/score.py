@@ -18,9 +18,9 @@ GETUP_TERRAIN = ("low_poly", "raised_relief", "slope_up", "slope_down", "boxes")
 
 
 def seq_robots(d: dict):
-    """The sequence's robot count: its JSON keeps the per-robot results under ``robots``."""
-    n = d.get("robots")
-    return len(n["kicks"]) if isinstance(n, dict) and "kicks" in n else n
+    """The sequence's robot count, from its summary (its JSON keeps the per-robot results under ``robots``)."""
+    n = (d.get("summary") or {}).get("n")
+    return n if n is not None else d.get("robots")
 
 
 class Results:

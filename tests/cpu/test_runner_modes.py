@@ -2,6 +2,7 @@
 import json
 import math
 import shutil
+import time
 
 import numpy as np
 from fake_esp32 import fall_and_rise, roll
@@ -212,6 +213,29 @@ def test_one_fall_past_the_maximum_goes_limp(robot, tmp_path):
     _, _, meta = go(robot, tmp_path, "--getup-max", "2", seconds=10.0)
     assert meta["stop_reason"].startswith("disarm: fall 3 (") and "--getup-max 2 reached" in meta["stop_reason"]
     assert [e["end"] for e in meta["getups"]] == ["hand-back"] * 2
+
+
+def test_a_firmware_without_the_getup_mode_stops_the_getup(robot, tmp_path):
+    robot.echo = False
+    robot.script, robot.script_at = roll([(0.3, 90.0)]), POLICY_START + 20
+    _, z, meta = go(robot, tmp_path, seconds=3.0)
+    assert meta["stop_reason"] == "disarm: get-up: the firmware did not enter get-up mode: it doesn't support the get-up"
+    assert any("get-up mode" in w for w in meta["warnings"])
+    assert meta["getups"][0]["end"] == "no get-up mode" and sent_after_last_step(tmp_path, z) == 1
+
+
+def test_two_late_steps_in_a_row_stop_the_run(robot, tmp_path, monkeypatch):
+    monkeypatch.setattr(rn, "LATE_STEPS_STOP", 2)
+    real = rn.Runner.watch
+
+    def slow(self):
+        real(self)
+        if len(self.steps["tick"]) >= 10:          # from the policy loop's tenth step on, each step takes 50 ms
+            time.sleep(0.05)
+    monkeypatch.setattr(rn.Runner, "watch", slow)
+    _, z, meta = go(robot, tmp_path, seconds=2.0)
+    assert meta["stop_reason"] == "stop: two late steps in a row"
+    assert 10 <= len(z["tick"]) < 20
 
 
 def test_fall_in_the_stand_ramp_starts_in_getup(robot, tmp_path):

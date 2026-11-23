@@ -1,7 +1,7 @@
 # The policy interface
 
 What a policy observes and what its output does on a Mini Pupper v4. The interface is the same for the SKU2 and the SKU1;
-the shipped policies and the runner are the SKU2's. `mp4_rl/common/policy.py` (with `mp4_sim.calibration`) is the reference
+policies ship for both robots; the runner and the examples below are the SKU2's. `mp4_rl/common/policy.py` (with `mp4_sim.calibration`) is the reference
 implementation (numpy only, imported by the runner on the Pi); the training environment implements the same arithmetic in
 torch (`common/mdp.py`), and `tests/` checks that the two agree. If the interface changes, this document, `common/policy.py` and the
 exporter change together.
@@ -13,7 +13,7 @@ The per-robot numbers (servo signs, stand pose, calibration offsets) live in the
 `.venv/bin/python -m mp4_rl.deploy.runner check --policy mp4_rl/skills/<name>/policies/sku2` checks an exported policy against this document (see
 [Checking a policy](#checking-a-policy)).
 
-## The two policies
+## The SKU2 pair
 
 | | `mp4_rl/skills/walker/policies/sku2` | `mp4_rl/skills/getup/policies/sku2` |
 |---|---|---|

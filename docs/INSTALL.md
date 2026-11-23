@@ -9,6 +9,8 @@
   runtime.
 - CPU mode on macOS: macOS 14 or newer on Apple silicon. torch 2.14 has no
   wheel for Intel Macs.
+- gcc, for the classic gait the walker's evaluations compare against
+  (`mp4_rl/common/classic_gait.py` builds it on first use) and its tests.
 
 ## Modes
 
@@ -20,8 +22,9 @@
 Both modes install [mini_pupper_4_sim](https://github.com/mangdangroboticsclub/mini_pupper_4_sim) (`mp4-sim`) at its
 release v0.2.0: the robot models, their measured data (calibration, joint limits, masses), the servo models and the
 simulation scenes this package trains and evaluates on. The Raspberry Pi installs nothing: `tools/deploy.sh` copies the
-runner, the policy folders and two files of `mp4_sim` (see the get-up's
-[robot guide](../mp4_rl/skills/getup/docs/ROBOT_SKU2.md)).
+runner and the servo link, the policy interface, the SKU2 policy folders, three files of `mp4_sim` (`__init__.py`,
+`calibration.py`, `imu_mount.json`), the first-step timing tool with the simulated board it uses, and any
+`runs/streams/` (see the get-up's [robot guide](../mp4_rl/skills/getup/docs/ROBOT_SKU2.md#deploying)).
 
 Training and evaluation need `gpu`. `cpu` runs the policy checks, the deployment
 code and `tests/cpu`.
