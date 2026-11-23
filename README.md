@@ -1,6 +1,6 @@
 # mini_pupper_4_rl
 
-A bank of reinforcement-learning policies for the Mini Pupper v4. Each policy has one folder with everything about it:
+A library of reinforcement-learning policies for the Mini Pupper v4. Each policy has one folder with everything about it:
 its page, its training code, the recipes that trained it, the exported policies and checkpoints for each robot, and its
 evaluation. The code the policies share (the policy interface, export, PPO, the simulation environment, the robot side)
 lives in one common package.
