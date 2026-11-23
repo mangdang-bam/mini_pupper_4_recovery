@@ -135,7 +135,8 @@ uv pip install --python .venv/bin/python --no-deps -e ../mini_pupper_4_sim
 limits file's sha256 beside it. Then update the two hashes (`<robot>_joint_limits.json`, `<robot>_hip_envelope.json`)
 in the checkout's `src/mp4_sim/robots.py`: until then `scripts/install/verify.py` reports the replaced files. Every
 policy's decoder bounds come from the limits: re-export each policy
-(`.venv/bin/python -m mp4_rl.common.export --from-policy DIR DIR`) and check it with `runner check`. `--data FOLDER`
+(`.venv/bin/python -m mp4_rl.common.export --from-policy DIR DIR`) and check a SKU2 policy with `runner check`
+(the runner is the SKU2's). `--data FOLDER`
 writes the files to another folder instead, without touching `mp4_sim`.
 
 ## Tests

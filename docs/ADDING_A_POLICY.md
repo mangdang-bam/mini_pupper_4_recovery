@@ -22,7 +22,7 @@ shipped files, and, if it is to run on the SKU2 through the runner, a policy kin
 | `docs/` | anything else the policy needs, such as running it on the robot | | `ROBOT_SKU2.md`, `ROBOT_SKU1.md` |
 
 Shared code goes in `mp4_rl/common/` (or `mp4_rl/deploy/` for the robot side), not in a policy's folder.
-`tests/cpu/test_bank.py` expects every part above but `media/` and `docs/`, and `policies/`, `recipes/`, `checkpoints/`
+`tests/cpu/test_bank.py` expects `README.md`, `__init__.py`, `train.py`, `eval/`, and `policies/`, `recipes/`, `checkpoints/`
 and an `eval/<robot>.sh` for each robot in `ROBOTS` (`sku2`, `sku1`).
 
 ## 2. The registration line
